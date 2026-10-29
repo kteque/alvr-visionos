@@ -3273,10 +3273,7 @@ class WorldTracker {
         // while a tracked controller drives it, or when the streamer derives the pinch from the skeleton itself; a
         // paired controller that is idle or not tracked no longer disables it. The controller input paths above and
         // in sendGamepadInputs() leave the trigger alone while a hand pinch is down.
-        // Down under 3.0 cm thumb-tip to index-tip, up over 4.0 cm; the analog value ramps from 5 cm (0) to 3 cm (1).
-        // Was 2.0 / 3.0 and 4 -> 2 cm: on 2026-10-29 the skeleton's tip joints read 1.4-2.5 cm on real pinches and the
-        // streamer's sweep needs the value above 0.8, so most pinches were missed (ALVR's own test is about 1.65 cm,
-        // HandVector reads a full pinch at 0.8 cm, but those measure other joints).
+        // The click comes from visionOS's pinch gesture (see below); the thumb-tip to index-tip distance is only logged.
         if !handGesturesEnabled {
             for (hand, isLeft, controllerMotion) in [(handPoses.leftHand, true, controllerLeftMotion), (handPoses.rightHand, false, controllerRightMotion)] {
                 if controllerMotion != nil {
@@ -3291,13 +3288,12 @@ class WorldTracker {
                         distance = simd_distance(thumb.anchorFromJointTransform.columns.3.asFloat3(), index.anchorFromJointTransform.columns.3.asFloat3())
                     }
                 }
-                var down = isLeft ? leftHandPinchDown : rightHandPinchDown
-                if let d = distance {
-                    down = down ? d < 0.040 : d < 0.030
-                } else {
-                    down = false
-                }
-                let value: Float = distance.map { min(max((0.050 - $0) / 0.020, 0.0), 1.0) } ?? 0.0
+                // The click is visionOS's own pinch gesture (handleSpatialEvent: indirectPinch began / ended, per chirality), not the
+                // skeleton's thumb-to-index distance: that distance read 1.4-2.5 cm on real pinches and under 3 cm when the hand was merely
+                // turned over (the tips' estimates collapse when they are hidden), so it missed pinches and clicked on hand rotations
+                // (2026-10-29). The system gesture is what the whole OS uses for a click; the distance stays in the log for diagnosis.
+                let down = isLeft ? leftIsPinching : rightIsPinching
+                let value: Float = down ? 1.0 : 0.0
                 if isLeft {
                     leftHandPinchDown = down
                     alvr_send_button(WorldTracker.leftTriggerClick, boolVal(down))
@@ -3307,7 +3303,7 @@ class WorldTracker {
                     alvr_send_button(WorldTracker.rightTriggerClick, boolVal(down))
                     alvr_send_button(WorldTracker.rightTriggerValue, scalarVal(value))
                 }
-                pinchLogPending[isLeft ? 0 : 1] = String(format: "%@ d=%@ down=%d", isLeft ? "L" : "R", distance.map { String(format: "%.1fcm", $0 * 100) } ?? "-", down ? 1 : 0)
+                pinchLogPending[isLeft ? 0 : 1] = String(format: "%@ d=%@ down=%d(sys)", isLeft ? "L" : "R", distance.map { String(format: "%.1fcm", $0 * 100) } ?? "-", down ? 1 : 0)
             }
             let now = CACurrentMediaTime()
             if now - lastPinchLogTime > 2.0 {

@@ -1131,7 +1131,10 @@ class Renderer {
         renderPassDescriptor.colorAttachments[0].texture = renderTargetColor
         renderPassDescriptor.colorAttachments[0].loadAction = .load
         renderPassDescriptor.colorAttachments[0].storeAction = .dontCare
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: chromaKeyEnabled ? 0.0 : 1.0)
+        // Black where nothing is drawn, chroma key or not: with a transparent clear the wearer saw the room past the frame's edge
+        // whenever the declared box ended inside the visible window (2026-10-29, the ceiling client). Keyed pixels still discard, so the
+        // passthrough shows through the picture where the streamer paints the key colour, never beyond the frame.
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
         renderPassDescriptor.depthAttachment.texture = renderTargetDepth
         renderPassDescriptor.depthAttachment.loadAction = .clear
         renderPassDescriptor.depthAttachment.storeAction = .store
@@ -1642,7 +1645,10 @@ class Renderer {
         renderPassDescriptor.colorAttachments[0].texture = renderTargetColor
         renderPassDescriptor.colorAttachments[0].loadAction = whichIdx == 0 ? .clear : .load
         renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: chromaKeyEnabled ? 0.0 : 1.0)
+        // Black where nothing is drawn, chroma key or not: with a transparent clear the wearer saw the room past the frame's edge
+        // whenever the declared box ended inside the visible window (2026-10-29, the ceiling client). Keyed pixels still discard, so the
+        // passthrough shows through the picture where the streamer paints the key colour, never beyond the frame.
+        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColor(red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0)
         renderPassDescriptor.rasterizationRateMap = rasterizationRateMap
         
         renderPassDescriptor.renderTargetArrayLength = viewports.count
