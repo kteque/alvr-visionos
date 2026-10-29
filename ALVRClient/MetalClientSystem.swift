@@ -6,6 +6,7 @@
 
 import CompositorServices
 import Metal
+import QuartzCore   // CACurrentMediaTime for the double-tap timing
 import MetalKit
 import simd
 import Spatial
