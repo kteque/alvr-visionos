@@ -154,6 +154,16 @@ extension WorldTracker {
                 }
             }
             
+            if !isInProgressPinch {
+                // a pinch begins: a second one within 0.9 s of a short first one is a double tap (sent as A / X by the tracker, WorldTracker.pinchBeganAt)
+                let h = isRight ? 1 : 0
+                let now = CACurrentMediaTime()
+                let w = WorldTracker.shared
+                if w.pinchEndedAt[h] > w.pinchBeganAt[h] && now - w.pinchEndedAt[h] < 0.9 && w.pinchEndedAt[h] - w.pinchBeganAt[h] < 0.6 {
+                    w.doubleTapUntil[h] = now + 0.15
+                }
+                w.pinchBeganAt[h] = now
+            }
             if isRight {
                 WorldTracker.shared.rightIsPinching = true
             }
@@ -165,10 +175,12 @@ extension WorldTracker {
             if event.id.hashValue == WorldTracker.shared.leftSelectionRayId {
                 WorldTracker.shared.leftIsPinching = false
                 WorldTracker.shared.leftSelectionRayId = -1
+                WorldTracker.shared.pinchEndedAt[0] = CACurrentMediaTime()
             }
             else if event.id.hashValue == WorldTracker.shared.rightSelectionRayId {
                 WorldTracker.shared.rightIsPinching = false
                 WorldTracker.shared.rightSelectionRayId = -1
+                WorldTracker.shared.pinchEndedAt[1] = CACurrentMediaTime()
             }
             return
         }

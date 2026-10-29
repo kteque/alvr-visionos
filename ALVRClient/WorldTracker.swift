@@ -443,6 +443,11 @@ class WorldTracker {
     var leftPinchStartAngle = simd_quatf()
     var leftPinchCurrentAngle = simd_quatf()
     var leftIsPinching = false
+    /// Two confirmed pinches in a row (the second begun within 0.9 s of the first's end, the first held under 0.6 s) are a double tap: sent as the A (right hand)
+    /// or X (left hand) button for 150 ms, which the desktop mirror reads as a double click, like a Quest's real A / X. Index 0 = left, 1 = right.
+    var pinchBeganAt: [Double] = [0, 0]
+    var pinchEndedAt: [Double] = [0, 0]
+    var doubleTapUntil: [Double] = [0, 0]
     var lastLeftIsPinching = false
     var leftPinchTrigger: Float = 0.0
     /// Raw hand pinch (thumb tip to index tip) as a click, with hysteresis; see sendTracking.
@@ -3294,14 +3299,17 @@ class WorldTracker {
                 // (2026-10-29). The system gesture is what the whole OS uses for a click; the distance stays in the log for diagnosis.
                 let down = isLeft ? leftIsPinching : rightIsPinching
                 let value: Float = down ? 1.0 : 0.0
+                let doubleTap = CACurrentMediaTime() < doubleTapUntil[isLeft ? 0 : 1]   // two pinches in a row: the A / X button, a double click on the desktop mirror
                 if isLeft {
                     leftHandPinchDown = down
                     alvr_send_button(WorldTracker.leftTriggerClick, boolVal(down))
                     alvr_send_button(WorldTracker.leftTriggerValue, scalarVal(value))
+                    alvr_send_button(WorldTracker.leftButtonX, boolVal(doubleTap))
                 } else {
                     rightHandPinchDown = down
                     alvr_send_button(WorldTracker.rightTriggerClick, boolVal(down))
                     alvr_send_button(WorldTracker.rightTriggerValue, scalarVal(value))
+                    alvr_send_button(WorldTracker.rightButtonA, boolVal(doubleTap))
                 }
                 pinchLogPending[isLeft ? 0 : 1] = String(format: "%@ d=%@ down=%d(sys)", isLeft ? "L" : "R", distance.map { String(format: "%.1fcm", $0 * 100) } ?? "-", down ? 1 : 0)
             }
