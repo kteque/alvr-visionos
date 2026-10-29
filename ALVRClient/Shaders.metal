@@ -331,12 +331,12 @@ half4 videoFrameFragmentShader_common(half3 color_in) {
     half3 color = EncodingNonlinearToLinearRGB_half(color_in, ENCODING_GAMMA);
     
     half4 colorOut = half4(color.rgb, 1.0);
+    // Keyed pixels are WRITTEN transparent (premultiplied zero), not discarded: the render pass clears to opaque black so that nothing shows past
+    // the frame's edge, and a discarded fragment would leave that black in place (the chroma key died with the opaque clear, 2026-10-29). This
+    // pipeline does not blend, so the zero replaces the pixel and the compositor shows the room there: between games (the idle colour), around the
+    // desktop mirror (its background is the idle colour), never in a game, which paints its own picture.
     if (CHROMAKEY_ENABLED && CHROMAKEY_MODE != 0) {
         half mask = chromaKeyMaskFromStreamer(color.rgb);
-        if (mask <= 0.0) {
-            discard_fragment();
-        }
-        
         // Premultiplied alpha, as the compositor expects
         return half4(colorOut.rgb * mask, colorOut.a * mask);
     }
@@ -345,7 +345,7 @@ half4 videoFrameFragmentShader_common(half3 color_in) {
         half4 newHSV = half4(rgb2hsv(color.rgb), 1.0);
         half mask = colorclose_hsv(newHSV.rgb, chromaKeyHSV.rgb, half2(CHROMAKEY_LERP_DIST_RANGE));
         if (mask <= 0.0) {
-            discard_fragment();
+            return half4(0.0h);
         }
         
         colorOut = half4((colorOut.rgb * mask) - (half3(CHROMAKEY_COLOR) * (1.0 - mask)), colorOut.a * mask);
