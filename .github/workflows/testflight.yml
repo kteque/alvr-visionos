@@ -20,6 +20,10 @@ on:
         description: "Only check that the Release archive builds (no signing, no secrets needed, nothing is uploaded)"
         type: boolean
         default: false
+      revoke_ci_certificates:
+        description: "First revoke the certificates earlier runs created on the team ('Created via API'): tick when signing says the account has reached the maximum number of certificates"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -106,6 +110,35 @@ jobs:
             /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.low-latency-streaming" build/AirFrameXR.entitlements
           fi
           cat build/AirFrameXR.entitlements
+
+      - name: Revoke the certificates earlier runs created
+        if: ${{ !inputs.unsigned_check && inputs.revoke_ci_certificates }}
+        run: |
+          # Automatic signing mints a certificate per fresh runner and Apple caps their number ("Choose a certificate to revoke. Your account has
+          # reached the maximum number of certificates"). The App Store Connect API key the build already uses can list and revoke them; only the
+          # ones Xcode created through the API are touched (display name "Created via API"), never a certificate made by hand on a Mac.
+          python3 -m pip install --quiet --disable-pip-version-check pyjwt cryptography
+          python3 - <<'PY'
+          import json, os, time, urllib.request, jwt
+          key = open(os.environ["ASC_KEY_PATH"]).read()
+          tok = jwt.encode({"iss": os.environ["ASC_ISSUER_ID"], "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"}, key, algorithm="ES256", headers={"kid": os.environ["ASC_KEY_ID"]})
+          def call(method, url):
+              req = urllib.request.Request(url, method=method, headers={"Authorization": "Bearer " + tok})
+              with urllib.request.urlopen(req) as r:
+                  body = r.read()
+                  return json.loads(body) if body else {}
+          certs = call("GET", "https://api.appstoreconnect.apple.com/v1/certificates?limit=200").get("data", [])
+          print(f"{len(certs)} certificate(s) on the team:")
+          for c in certs:
+              a = c["attributes"]
+              print(f"  {c['id']}  {a.get('certificateType'):22s} {a.get('displayName')!s:40s} {a.get('name')!s:48s} expires {str(a.get('expirationDate'))[:10]}")
+          mine = [c for c in certs if "created via api" in (str(c["attributes"].get("displayName", "")) + str(c["attributes"].get("name", ""))).lower()]
+          if not mine:
+              print("::warning::no certificate created through the API found; nothing revoked (revoke by hand at developer.apple.com if signing still fails)")
+          for c in mine:
+              call("DELETE", "https://api.appstoreconnect.apple.com/v1/certificates/" + c["id"])
+              print("revoked", c["id"], c["attributes"].get("certificateType"), c["attributes"].get("displayName"))
+          PY
 
       - name: Archive (unsigned check)
         if: ${{ inputs.unsigned_check }}
