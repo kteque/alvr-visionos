@@ -76,8 +76,11 @@ extension GlobalSettings {
     /// canted views, which multiplies these by about 1.017: the host sees about 1.05 / 0.80 / 0.76 / 0.87 (check config\airframexr_views.json).
     /// Given as outer / inner / up / down; the right eye mirrors it, so outer and inner swap. Nothing is settable on the headset: a wearer who sees
     /// black beyond an edge needs a larger constant here (a rebuild), one who sees less restricts on the PC.
+    /// CALIBRATION BUILD (branch `calibration`, temporary): no ceiling at all, the headset declares its drawable's own tangents (about 1.79 / 1.02 / 1.22 / 1.02),
+    /// so the FoV sweep (fov_sweep.exe, docs/FOV_CALIBRATION.md) can reach any wearer's visible edge. Run it with the streamer's override and
+    /// stream fit unticked. The released client (branch airframexr-client) declares the ceiling 1.03 / 0.79 / 0.75 / 0.86 instead.
     static func visibleFovTangents(isLeftEye: Bool) -> simd_float4 {
-        let outerInnerUpDown = simd_float4(1.03, 0.79, 0.75, 0.86)
+        let outerInnerUpDown = simd_float4(10.0, 10.0, 10.0, 10.0)
         return isLeftEye ? outerInnerUpDown : simd_float4(outerInnerUpDown.y, outerInnerUpDown.x, outerInnerUpDown.z, outerInnerUpDown.w)
     }
 }
