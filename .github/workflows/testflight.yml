@@ -117,7 +117,8 @@ jobs:
           # Automatic signing mints a certificate per fresh runner and Apple caps their number ("Choose a certificate to revoke. Your account has
           # reached the maximum number of certificates"). The App Store Connect API key the build already uses can list and revoke them; only the
           # ones Xcode created through the API are touched (display name "Created via API"), never a certificate made by hand on a Mac.
-          python3 -m pip install --quiet --disable-pip-version-check pyjwt cryptography
+          # the runner's Python is Homebrew's, marked externally managed (PEP 668): the machine is thrown away after the run, so install into it
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyjwt cryptography
           python3 - <<'PY'
           import json, os, time, urllib.request, jwt
           key = open(os.environ["ASC_KEY_PATH"]).read()
