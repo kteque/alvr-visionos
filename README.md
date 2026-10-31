@@ -5,7 +5,7 @@ PC runs the game through AirFrameXR's OpenXR runtime (frame generation, foveated
 the ALVR v20 protocol, and this app shows it on the Vision Pro with hand and PlayStation VR2 Sense controller
 tracking.
 
-Version 1.2.1 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
+Version 1.2.2 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
 
 ## Credits
 
@@ -77,6 +77,12 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
 
 Same as upstream: see the [Building](https://github.com/alvr-org/alvr-visionos/wiki/Building) wiki page. The CI
 workflow files show the exact commands (Rust client core, cbindgen, `repack_alvr_client.sh`, then `xcodebuild`).
+
+## 1.2.2 (2026-10-31)
+
+- Finger pinches are ignored while a regular gamepad (DualSense, Xbox, Joy-Con) is connected. A pinch caught by accident used to take
+  the trigger and pointer from the gamepad for a few seconds (user report). Tracked PS VR2 Sense controllers are not affected (they are
+  handled per hand). Built by CI only; not tested on a headset. Any connected gamepad switches pinches off, used or idle.
 
 ## 1.2.1 (2026-10-30)
 

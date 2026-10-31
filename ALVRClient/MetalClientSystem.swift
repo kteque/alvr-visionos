@@ -97,6 +97,15 @@ class MetalClientSystem {
 
 extension WorldTracker {
     static func handleSpatialEvent(_ event: SpatialEventCollection.Event) {
+        // A gamepad is connected: finger pinches are not read at all. A pinch caught by accident used to take the
+        // trigger/pointer from the gamepad (hand pinch wins over the controller paths) and it stopped working for seconds.
+        if WorldTracker.gamepadConnected {
+            let w = WorldTracker.shared
+            w.leftIsPinching = false
+            w.rightIsPinching = false
+            w.doubleTapUntil = [0, 0]
+            return
+        }
         var isInProgressPinch = false
         var isRight = false
         if event.id.hashValue == WorldTracker.shared.leftSelectionRayId {

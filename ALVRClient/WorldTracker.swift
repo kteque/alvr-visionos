@@ -308,6 +308,13 @@ class WorldTracker {
     var rightHapticsAmplitude: Float = 0.0
     var rightEngine: CHHapticEngine? = nil
     
+    /// A regular gamepad (DualSense, Xbox, Joy-Con...) is connected. The tracked spatial controllers (PS VR2 Sense) do not
+    /// count: they are handled per hand through their own tracking.
+    static var gamepadConnected: Bool {
+        let spatial = GCController.spatialControllers()
+        return GCController.controllers().contains { c in !spatial.contains(where: { $0 === c }) }
+    }
+
     // Controller click-together to toggle hand tracking
     var firstControllerClickTime = 0.0
     var secondControllerClickTime = 0.0

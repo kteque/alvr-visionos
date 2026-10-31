@@ -11,7 +11,7 @@ on:
     inputs:
       marketing_version:
         description: "App version shown in TestFlight (CFBundleShortVersionString)"
-        default: "1.2.1"
+        default: "1.2.2"
       low_latency_streaming:
         description: "Include the low-latency-streaming entitlement (untick if signing complains about it)"
         type: boolean
