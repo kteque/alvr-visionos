@@ -649,6 +649,62 @@ class Renderer {
         }
     }
     
+    // MARK: - Read-only telemetry (branch additional_telemetry): `[tele]` lines in the streamer's log, no state written, no behaviour change
+    var teleLastVsync: Double = 0
+    var teleWindowStart: Double = 0
+    var teleCount = 0
+    var teleSum: Double = 0
+    var teleMin: Double = .infinity
+    var teleMax: Double = 0
+    var teleFirstLogged = false
+    var teleLastThermal: Int = -1
+
+    func teleLog(_ line: String) {
+        ("[tele] " + line).withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+    }
+
+    /// Once at the first drawable (sizes, viewports, rate map), then every 10 s: the display interval seen between presentation times (mean / min /
+    /// max, so a switch between 90, 96 and 100 Hz shows), the thermal state, the decoder's refresh target. Called once per rendered frame with that frame's drawable.
+    func logTelemetry(drawable: LayerRenderer.Drawable, vsyncTime: Double) {
+        let now = CACurrentMediaTime()
+        if teleLastVsync > 0 {
+            let d = vsyncTime - teleLastVsync
+            if d > 0 && d < 0.1 {
+                teleCount += 1; teleSum += d; teleMin = min(teleMin, d); teleMax = max(teleMax, d)
+            }
+        }
+        teleLastVsync = vsyncTime
+        if teleWindowStart == 0 { teleWindowStart = now }
+
+        if !teleFirstLogged {
+            teleFirstLogged = true
+            let tex = drawable.colorTextures.first
+            teleLog(String(format: "drawable color %ldx%ld layers %ld views %ld", tex?.width ?? 0, tex?.height ?? 0, tex?.arrayLength ?? 0, drawable.views.count))
+            for i in 0..<drawable.views.count {
+                let v = drawable.views[i].textureMap.viewport
+                teleLog(String(format: "view %d viewport %.0fx%.0f at %.0f,%.0f", i, v.width, v.height, v.originX, v.originY))
+            }
+            if let vrr = drawable.rasterizationRateMaps.first {
+                for layer in 0..<vrr.layerCount {
+                    let p = vrr.physicalSize(layer: layer)
+                    teleLog(String(format: "ratemap layer %d screen %.0fx%.0f physical %ldx%ld", layer, vrr.screenSize.width, vrr.screenSize.height, p.width, p.height))
+                }
+            } else {
+                teleLog("ratemap none")
+            }
+        }
+
+        let thermal = ProcessInfo.processInfo.thermalState.rawValue
+        let thermalChanged = thermal != teleLastThermal
+        if (now - teleWindowStart >= 10.0 && teleCount > 0) || thermalChanged {
+            let mean = teleCount > 0 ? teleSum / Double(teleCount) : 0
+            teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames; thermal %d; stream target %.0f Hz",
+                           mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, thermal, refreshRate))
+            teleLastThermal = thermal
+            teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0
+        }
+    }
+
     // Checks if eye tracking was secretly added, maybe, hard to know really.
     func checkEyes(drawable: LayerRenderer.Drawable) {
         print("begin -----")
@@ -886,6 +942,7 @@ class Renderer {
         
         let vsyncTime = LayerRenderer.Clock.Instant.epoch.duration(to: mainDrawable.frameTiming.presentationTime).timeInterval
         let vsyncTimeNs = UInt64(vsyncTime * Double(NSEC_PER_SEC))
+        logTelemetry(drawable: mainDrawable, vsyncTime: vsyncTime)
         let framePreviouslyPredictedPose = queuedFrame != nil ? WorldTracker.shared.convertSteamVRViewPose(queuedFrame!.viewParams) : nil
         
         // Do NOT move this, just in case, because DeviceAnchor is wonkey and every DeviceAnchor mutates each other.

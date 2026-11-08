@@ -181,6 +181,15 @@ struct VideoHandler {
             return (nil, nil)
         }
         
+        // Telemetry only (additional_telemetry): is the decoder the hardware one? One `[tele]` line per session.
+        if let session = decompressionSession {
+            var hw: CFTypeRef? = nil
+            let st = VTSessionCopyProperty(session, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, allocator: nil, valueOut: &hw)
+            let dims = CMVideoFormatDescriptionGetDimensions(videoFormat!)
+            let codec = CMFormatDescriptionGetMediaSubType(videoFormat!)
+            "[tele] decoder hardware \(st == 0 ? String(describing: hw) : "unknown (\(st))") codec \(codec) \(dims.width)x\(dims.height)".withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+        }
+
         // Optimize display for 24P film viewing if selected
         VideoHandler.applyRefreshRate(videoFormat: videoFormat)
         
