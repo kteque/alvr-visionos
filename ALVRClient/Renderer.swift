@@ -689,7 +689,16 @@ class Renderer {
     // logTelemetry + previous-pose conversion, and the rest up to the anchor query (sendTracking and friends).
     var teleSubMax = [Double](repeating: 0, count: 5), teleSubWorst = [Double](repeating: 0, count: 5), teleSubWorstView = 0.0
 
-    func teleSegments(_ seg: [Double], sub: [Double]) {
+    // send_tracking in four: refetch query, walk-back query loop, anchor handling, hands/gaze/send. Max per window, the split of
+    // the window's slowest call, and how many loop queries that call needed.
+    var teleTrkMax = [Double](repeating: 0, count: 4), teleTrkWorst = [Double](repeating: 0, count: 4)
+    var teleTrkWorstTotal = 0.0, teleTrkWorstIters = 0, teleTrkMaxIters = 0, teleTrkRetries = 0, teleTrkN = 0
+
+    func teleSegments(_ seg: [Double], sub: [Double], trk: [Double], trkIters: Int) {
+        for i in 0..<4 { teleTrkMax[i] = max(teleTrkMax[i], trk[i]) }
+        let trkTotal = trk.reduce(0, +)
+        if trkTotal > teleTrkWorstTotal { teleTrkWorstTotal = trkTotal; teleTrkWorst = trk; teleTrkWorstIters = trkIters }
+        teleTrkMaxIters = max(teleTrkMaxIters, trkIters); if trkIters > 1 { teleTrkRetries += 1 }; teleTrkN += 1
         for i in 0..<5 { teleSubMax[i] = max(teleSubMax[i], sub[i]) }
         if seg[1] > teleSubWorstView { teleSubWorstView = seg[1]; teleSubWorst = sub }
         let total = seg.reduce(0, +)
@@ -710,7 +719,11 @@ class Renderer {
                              ms(teleSubWorst[0]), ms(teleSubWorst[1]), ms(teleSubWorst[2]), ms(teleSubWorst[3]), ms(teleSubWorst[4]))
         teleSubMax = [Double](repeating: 0, count: 5); teleSubWorst = teleSubMax; teleSubWorstView = 0
         teleSegSum = [0, 0, 0, 0]; teleSegMax = [0, 0, 0, 0]; teleSegN = 0; teleSegOver4 = 0; teleSegWorst = [0, 0, 0, 0]; teleSegWorstTotal = 0
-        return line + subLine
+        let trkLine = String(format: "; send_tracking parts max ms: refetch %.2f, walk-back loop %.2f, anchor handling %.2f, hands+send %.2f; slowest call %.2f ms: refetch %.2f, loop %.2f (%d queries), anchor %.2f, hands+send %.2f; calls needing a retry %d of %d, most queries %d",
+                             ms(teleTrkMax[0]), ms(teleTrkMax[1]), ms(teleTrkMax[2]), ms(teleTrkMax[3]), ms(teleTrkWorstTotal),
+                             ms(teleTrkWorst[0]), ms(teleTrkWorst[1]), teleTrkWorstIters, ms(teleTrkWorst[2]), ms(teleTrkWorst[3]), teleTrkRetries, teleTrkN, teleTrkMaxIters)
+        teleTrkMax = [Double](repeating: 0, count: 4); teleTrkWorst = teleTrkMax; teleTrkWorstTotal = 0; teleTrkWorstIters = 0; teleTrkMaxIters = 0; teleTrkRetries = 0; teleTrkN = 0
+        return line + subLine + trkLine
     }
 
     func teleDrawCpu(_ seconds: Double) {
@@ -1254,7 +1267,8 @@ class Renderer {
             let teleCommit = CACurrentMediaTime()
             teleDrawCpu(teleCommit - telePickEnd)
             teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3],
-                         sub: [teleSubA - telePhase1, teleSubB - teleSubA, teleSubC - teleSubB, teleSubD - teleSubC, telePhase2 - teleSubD])
+                         sub: [teleSubA - telePhase1, teleSubB - teleSubA, teleSubC - teleSubB, teleSubD - teleSubC, telePhase2 - teleSubD],
+                         trk: WorldTracker.shared.teleTrkLast, trkIters: WorldTracker.shared.teleTrkIters)
         }
         commandBuffer.commit()
         frame.endSubmission()

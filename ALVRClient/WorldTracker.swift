@@ -2179,10 +2179,18 @@ class WorldTracker {
     // TODO: figure out how stable Apple's predictions are into the future
     // targetTimestamp: The timestamp of the pose we will send to ALVR--capped by how far we can predict forward.
     // realTargetTimestamp: The timestamp we tell ALVR, which always includes the full round-trip prediction.
+    var teleTrkLast = [Double](repeating: 0, count: 4)
+    var teleTrkIters = 0
+
     func sendTracking(viewTransforms: [simd_float4x4], viewFovs: [AlvrFov], targetTimestamp: Double, reportedTargetTimestamp: Double, anchorTimestamp: Double, delay: Double, headLookahead: Double = 0.0) -> simd_float4x4 {
         // The look-ahead only moves the head query; controllers keep targetTimestamp, and the stamp the streamer matches
         // frames by (reportedTargetTimestamp) is unchanged. The walk-back below handles Apple refusing far-future queries.
         var targetTimestampWalkedBack = targetTimestamp + headLookahead
+        // Telemetry only (render thread): where this call's time goes, read by Renderer after the call.
+        let teleT0 = CACurrentMediaTime()
+        var teleT1 = teleT0, teleT2 = teleT0, teleT3 = teleT0
+        var teleIters = 0
+        defer { teleTrkLast = [teleT1 - teleT0, teleT2 - teleT1, teleT3 - teleT2, CACurrentMediaTime() - teleT3]; teleTrkIters = teleIters }
         let controllerPredictionTimestamp = targetTimestamp
         var deviceAnchor:DeviceAnchor? = nil
         
@@ -2190,6 +2198,7 @@ class WorldTracker {
         // we have to query the last head timestamp again (the anchor will be different than the last time we asked)
         // HACK: Device anchors have had hidden state in the past, fetch this first
         var deviceAnchorLastRefetched = worldTracking.queryDeviceAnchor(atTimestamp: lastHeadTimestamp)
+        teleT1 = CACurrentMediaTime()
         
         Task {
             for anchor in worldAnchorsToRemove {
@@ -2206,12 +2215,14 @@ class WorldTracker {
         
         // Predict as far into the future as Apple will allow us.
         for _ in 0...20 {
+            teleIters += 1
             deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: targetTimestampWalkedBack)
             if deviceAnchor != nil {
                 break
             }
             targetTimestampWalkedBack -= (5/1000.0)
         }
+        teleT2 = CACurrentMediaTime()
         
         // Fallback.
         if deviceAnchor == nil {
@@ -2296,6 +2307,7 @@ class WorldTracker {
         let rightPositionHeadLocal = rightTransformHeadLocal.columns.3
         let rightPoseHeadLocal = AlvrPose(rightOrientationHeadLocal, rightPositionHeadLocal)
         
+        teleT3 = CACurrentMediaTime()
         var trackingMotions:[AlvrDeviceMotion] = []
         var skeletonLeft:[AlvrPose]? = nil
         var skeletonRight:[AlvrPose]? = nil
