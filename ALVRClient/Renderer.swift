@@ -672,6 +672,36 @@ class Renderer {
     var teleLastThermal: Int = -1
 
     /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
+    // Draw cost (read-only): CPU time from the end of the pick to `commit`, GPU time of the command buffer, and how long before (positive)
+    // or after (negative) the presentation time the GPU finished. The completion handler runs on another thread, hence the lock.
+    let teleDrawLock = NSLock()
+    var teleCpuSum = 0.0, teleCpuMax = 0.0, teleCpuN = 0
+    var teleGpuSum = 0.0, teleGpuMax = 0.0, teleGpuN = 0
+    var teleDoneSlackMin = Double.infinity, teleDoneLate = 0, teleDoneN = 0
+
+    func teleDrawCpu(_ seconds: Double) {
+        teleDrawLock.lock(); teleCpuSum += seconds; teleCpuMax = max(teleCpuMax, seconds); teleCpuN += 1; teleDrawLock.unlock()
+    }
+
+    func teleDrawDone(gpu: Double, slackToPresentation: Double) {
+        teleDrawLock.lock()
+        if gpu > 0 && gpu < 1 { teleGpuSum += gpu; teleGpuMax = max(teleGpuMax, gpu); teleGpuN += 1 }
+        teleDoneSlackMin = min(teleDoneSlackMin, slackToPresentation); teleDoneN += 1
+        if slackToPresentation < 0 { teleDoneLate += 1 }
+        teleDrawLock.unlock()
+    }
+
+    func teleDrawLine() -> String {
+        teleDrawLock.lock()
+        defer { teleDrawLock.unlock() }
+        let cpu = teleCpuN > 0 ? teleCpuSum / Double(teleCpuN) * 1000 : 0, gpu = teleGpuN > 0 ? teleGpuSum / Double(teleGpuN) * 1000 : 0
+        let line = String(format: "draw over %d frames: cpu mean %.2f ms max %.2f; gpu mean %.2f ms max %.2f (%d timed); gpu done %d late of %d (min slack to presentation %.2f ms)",
+                          teleCpuN, cpu, teleCpuMax * 1000, gpu, teleGpuMax * 1000, teleGpuN, teleDoneLate, teleDoneN, teleDoneSlackMin.isFinite ? teleDoneSlackMin * 1000 : 0)
+        teleCpuSum = 0; teleCpuMax = 0; teleCpuN = 0; teleGpuSum = 0; teleGpuMax = 0; teleGpuN = 0
+        teleDoneSlackMin = .infinity; teleDoneLate = 0; teleDoneN = 0
+        return line
+    }
+
     func teleSubmitted(deadline: LayerRenderer.Clock.Instant) {
         let slack = LayerRenderer.Clock().now.duration(to: deadline).timeInterval
         teleMinSlack = min(teleMinSlack, slack)
@@ -744,6 +774,7 @@ class Renderer {
             objc_sync_exit(EventHandler.shared.frameQueueLock)
             teleLog("queue overflow drops \(dropsTotal - teleDropsPrev) in the window (decoded frames discarded, the queue holds 2)")
             teleDropsPrev = dropsTotal
+            teleLog(teleDrawLine())
             let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
             teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
                            ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
@@ -824,7 +855,8 @@ class Renderer {
         let telePickStart = CACurrentMediaTime()
         let telePickDepth = EventHandler.shared.queueDepth()
         let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.005)
-        if streamingActiveForFrame { telePick(telePicked, depth: telePickDepth, waited: CACurrentMediaTime() - telePickStart) }
+        let telePickEnd = CACurrentMediaTime()
+        if streamingActiveForFrame { telePick(telePicked, depth: telePickDepth, waited: telePickEnd - telePickStart) }
         switch telePicked {
         case .resubmit(let f):
             queuedFrame = f
@@ -1046,6 +1078,10 @@ class Renderer {
         let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
         
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
+            if EventHandler.shared.streamingActive {
+                let nowS = CACurrentMediaTime()
+                self.teleDrawDone(gpu: commandBuffer.gpuEndTime - commandBuffer.gpuStartTime, slackToPresentation: Double(vsyncTimeNs) / Double(NSEC_PER_SEC) - nowS)
+            }
             if EventHandler.shared.alvrInitialized, let submitted = queuedFrame, EventHandler.shared.markSubmitted(submitted.timestamp) {
                 let currentTimeNs = UInt64(CACurrentMediaTime() * Double(NSEC_PER_SEC))
                 
@@ -1172,6 +1208,7 @@ class Renderer {
             fadeInOverlayAlpha = 0.0
         }
         
+        if streamingActiveForFrame { teleDrawCpu(CACurrentMediaTime() - telePickEnd) }
         commandBuffer.commit()
         frame.endSubmission()
         teleSubmitted(deadline: timing.renderingDeadline)
