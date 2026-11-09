@@ -78,7 +78,7 @@ final class HarnessStats: @unchecked Sendable {
         for (k, p) in HarnessStats.clientPatterns where line.hasPrefix(p) { clientCounters[k, default: 0] += 1 }
         lock.unlock()
     }
-    func count(_ name: String) { lock.lock(); counters[name, default: 0] += 1; lock.unlock() }
+    func count(_ name: String, by n: Int = 1) { lock.lock(); counters[name, default: 0] += n; lock.unlock() }
     func get(_ name: String) -> Int { lock.lock(); defer { lock.unlock() }; return counters[name] ?? 0 }
     func getClient(_ name: String) -> Int { lock.lock(); defer { lock.unlock() }; return clientCounters[name] ?? 0 }
     func decodeError(status: Int32) { lock.lock(); decodeErrors[status, default: 0] += 1; lock.unlock() }
@@ -158,6 +158,8 @@ final class FakeCore: @unchecked Sendable {
     // MARK: streamer -> client
 
     /// connection.rs:229 + :507-512: StreamingStarted, then DecoderConfig.
+    var refreshRateHint: Float = 90
+
     func startStreaming() {
         lock.lock()
         guard conn != .streaming else { lock.unlock(); return }
@@ -167,7 +169,7 @@ final class FakeCore: @unchecked Sendable {
         lock.unlock()
         var s = AlvrEvent()
         s.STREAMING_STARTED = StreamingStarted_Body(tag: AlvrEvent_Tag(ALVR_EVENT_STREAMING_STARTED.rawValue), view_width: width, view_height: height,
-                                                    refresh_rate_hint: 90, encoding_gamma: 1.5, enable_foveated_encoding: true, enable_hdr: false)
+                                                    refresh_rate_hint: refreshRateHint, encoding_gamma: 1.5, enable_foveated_encoding: true, enable_hdr: false)
         push(s)
         sendDecoderConfig()
         HarnessLog.shared.event("host_streaming_started", ["config": "\(configId)"])

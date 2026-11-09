@@ -660,6 +660,8 @@ class Renderer {
     var teleLate = 0                 // display intervals over 15 ms in the window (a skipped refresh at 100 Hz)
     var teleMisses = 0               // frames whose submission ended after the compositor's rendering deadline
     var teleMinSlack: Double = .infinity
+    var teleDropsPrev = 0
+    var teleLastWindowMean: Double = 0
     // what each tick showed (EventHandler.pollFrameForDisplay): fresh frame / the last one again because visionOS skipped its submission / reprojected after the wait / nothing
     var telePickFresh = 0, telePickResubmit = 0, telePickReproj = 0, telePickNone = 0
     var teleDepthSum = 0, teleDepthMax = 0, teleDepthTicks = 0      // frames queued when the pick began
@@ -737,6 +739,11 @@ class Renderer {
             let mean = teleCount > 0 ? teleSum / Double(teleCount) : 0
             teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames, %d over 15 ms; deadline misses %d, min slack %.2f ms; thermal %d; stream target %.0f Hz",
                            mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, teleLate, teleMisses, teleMinSlack.isFinite ? teleMinSlack * 1000 : 0, thermal, refreshRate))
+            objc_sync_enter(EventHandler.shared.frameQueueLock)
+            let dropsTotal = EventHandler.shared.queueOverflowDrops
+            objc_sync_exit(EventHandler.shared.frameQueueLock)
+            teleLog("queue overflow drops \(dropsTotal - teleDropsPrev) in the window (decoded frames discarded, the queue holds 2)")
+            teleDropsPrev = dropsTotal
             let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
             teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
                            ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
@@ -745,6 +752,10 @@ class Renderer {
                            telePickFresh > 0 ? teleAgeSum / Double(telePickFresh) * 1000 : 0, teleAgeMax * 1000))
             telePickFresh = 0; telePickResubmit = 0; telePickReproj = 0; telePickNone = 0; teleDepthSum = 0; teleDepthMax = 0; teleDepthTicks = 0
             teleFreshLate = 0; teleWaitSum = 0; teleWaitMax = 0; teleAgeSum = 0; teleAgeMax = 0; teleFreshWithQueued = 0
+            if teleLastWindowMean > 0 && mean > 0 && abs(mean - teleLastWindowMean) / teleLastWindowMean > 0.03 {
+                teleLog(String(format: "DISPLAY RATE CHANGED %.1f Hz -> %.1f Hz", 1.0 / teleLastWindowMean, 1.0 / mean))
+            }
+            if mean > 0 { teleLastWindowMean = mean }
             teleLastThermal = thermal
             teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0; teleLate = 0; teleMisses = 0; teleMinSlack = .infinity
         }

@@ -15,6 +15,9 @@ enum Phase {
     case idle(seconds: Double)
     /// a game at `fps` with +-jitterMs cadence noise; frames carry the pose sampled `poseAgeMs` before they are sent
     case game(seconds: Double, fps: Double, jitterMs: Double = 1, poseAgeMs: Double = 30)
+    /// a free-running game or paced output: frame k leaves at k / fps + noise (uniform +-arrivalJitterMs, not accumulating), and with
+    /// probability `spikeProb` a frame is held back by `spikeMs` (a Wi-Fi hiccup). Compare `.game`, whose jitter accumulates.
+    case stream(seconds: Double, fps: Double, arrivalJitterMs: Double, spikeProb: Double = 0, spikeMs: Double = 0, poseAgeMs: Double = 30)
     /// the game stops presenting: the host sends nothing (tools/host/src/pipeline.rs: empty boundary left empty)
     case stall(seconds: Double)
     /// irregular presents: gaps drawn uniformly from minMs...maxMs
@@ -44,6 +47,13 @@ struct Scenario {
     var maxReconnects = 0
     var minReconnects = 0
     var expectExit = false
+    /// the display's real rate (the system decides 90 or 100 Hz, the app does not) and the rate the streamer negotiated
+    var displayHz = 90.0
+    var hintHz = 90.0
+    /// pacing checks: repeated ticks over the tail must stay under this share (1 = not checked)
+    var maxRepeatFraction = 1.0
+    /// the client's refresh rate after the stream started must equal the negotiated one (hintHz)
+    var expectClientRateFollowsHint = false
 }
 
 let game90 = Phase.game(seconds: 6, fps: 90)
@@ -79,6 +89,25 @@ let scenarios: [Scenario] = [
              phases: [game90, .breakDecoder, .game(seconds: 36, fps: 90)], settleWindow: 0, maxReconnects: 1, minReconnects: 1),
     Scenario(name: "background_blip", about: "visionOS reports background for 0.3 s mid-stream",
              phases: [game90, .background(seconds: 0.3), game90]),
+    // Pacing (repeats at the display): the lab reproduction of the headset's repeated frames. Tail = the last phase after 1 s.
+    Scenario(name: "pace_paced_100", about: "output paced to a 100 Hz display (frame generation), small jitter",
+             phases: [game90, .stream(seconds: 20, fps: 100, arrivalJitterMs: 0.5)], displayHz: 100, hintHz: 100, maxRepeatFraction: 0.02),
+    Scenario(name: "pace_free98_100", about: "free-running 98 fps game into a 100 Hz display, 1.5 ms arrival jitter, rare 6 ms hiccups",
+             phases: [game90, .stream(seconds: 25, fps: 98, arrivalJitterMs: 1.5, spikeProb: 0.01, spikeMs: 6)], displayHz: 100, hintHz: 100, maxRepeatFraction: 0.05),
+    Scenario(name: "pace_free95_100", about: "free-running 95 fps (Dead Space range) into a 100 Hz display",
+             phases: [game90, .stream(seconds: 25, fps: 95, arrivalJitterMs: 2.0, spikeProb: 0.01, spikeMs: 6)], displayHz: 100, hintHz: 100, maxRepeatFraction: 0.08),
+    Scenario(name: "pace_free98_90", about: "free-running 98 fps into a 90 Hz display (stream above the display rate)",
+             phases: [game90, .stream(seconds: 25, fps: 98, arrivalJitterMs: 1.5, spikeProb: 0.01, spikeMs: 6)], displayHz: 90, hintHz: 100, maxRepeatFraction: 0.05),
+    Scenario(name: "pace_90_on_100", about: "paced 90 fps stream on a display the system runs at 100 Hz (the night logs)",
+             phases: [game90, .stream(seconds: 25, fps: 90, arrivalJitterMs: 0.5)], displayHz: 100, hintHz: 90, maxRepeatFraction: 0.15),
+    Scenario(name: "pace_game95_j3", about: "free-running 95 fps game, frame gaps 1/95 s +-3 ms accumulating, 100 Hz display",
+             phases: [game90, .game(seconds: 25, fps: 95, jitterMs: 3)], displayHz: 100, hintHz: 100),
+    Scenario(name: "pace_game97_j2", about: "free-running 97 fps game, +-2 ms, 100 Hz display",
+             phases: [game90, .game(seconds: 25, fps: 97, jitterMs: 2)], displayHz: 100, hintHz: 100),
+    Scenario(name: "pace_game98_j4", about: "free-running 98 fps game, +-4 ms, 100 Hz display",
+             phases: [game90, .game(seconds: 25, fps: 98, jitterMs: 4)], displayHz: 100, hintHz: 100),
+    Scenario(name: "rate_follows_hint", about: "the stream negotiates 100 Hz: the client's refresh rate (display-link and criteria request) follows it, not the 90 default",
+             phases: [game90, .stream(seconds: 6, fps: 100, arrivalJitterMs: 0.5)], displayHz: 100, hintHz: 100, expectClientRateFollowsHint: true),
     Scenario(name: "background_real", about: "the wearer leaves the app: background for 3 s (the client must exit)",
              phases: [game90, .background(seconds: 3), game90], expectExit: true),
 ]
@@ -113,6 +142,19 @@ final class Host: @unchecked Sendable {
             HarnessLog.shared.event("phase", ["kind": "game", "s": "\(s)", "fps": "\(fps)", "pose_age_ms": "\(age)"])
             if FakeCore.shared.conn == .idle { FakeCore.shared.startStreaming() }
             cadence(seconds: s, gap: { 1.0 / fps + Double.random(in: -jit...jit) / 1000 }, poseAgeMs: age)
+        case .stream(let s, let fps, let jit, let spikeProb, let spikeMs, let age):
+            HarnessLog.shared.event("phase", ["kind": "stream", "s": "\(s)", "fps": "\(fps)", "jitter_ms": "\(jit)"])
+            if FakeCore.shared.conn == .idle { FakeCore.shared.startStreaming() }
+            let t0 = CACurrentMediaTime()
+            var k = 0.0
+            while CACurrentMediaTime() - t0 < s {
+                var at = t0 + k / fps + Double.random(in: -jit...jit) / 1000
+                if spikeProb > 0 && Double.random(in: 0..<1) < spikeProb { at += spikeMs / 1000 }
+                k += 1
+                let now = CACurrentMediaTime()
+                if at > now { sleep(at - now) }
+                sendFrame(poseAgeMs: age)
+            }
         case .irregular(let s, let lo, let hi, let age):
             HarnessLog.shared.event("phase", ["kind": "irregular", "s": "\(s)"])
             cadence(seconds: s, gap: { Double.random(in: lo...hi) / 1000 }, poseAgeMs: age)
@@ -181,6 +223,9 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
     let newTail = Double(tail.filter { $0.shown == .new }.count)
     m["tail_ticks"] = Double(tail.count)
     m["tail_new_fraction"] = tail.isEmpty ? 0 : newTail / Double(tail.count)
+    let repTail = Double(tail.filter { $0.shown == .repeated }.count)
+    m["tail_repeated_fraction"] = tail.isEmpty ? 0 : repTail / Double(tail.count)
+    m["client_refresh_rate"] = Double(refreshRate)
     m["blank_ticks"] = Double(ticks.filter { $0.shown == .blank }.count)
     m["repeated_ticks"] = Double(ticks.filter { $0.shown == .repeated }.count)
     m["new_ticks"] = Double(ticks.filter { $0.shown == .new }.count)
@@ -207,6 +252,12 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
     if sc.settleWindow > 0 && (m["tail_new_fraction"] ?? 0) < sc.minNewFraction {
         fails.append(String(format: "after the last transition only %.0f%% of display ticks showed a new frame (want >= %.0f%%)",
                             (m["tail_new_fraction"] ?? 0) * 100, sc.minNewFraction * 100))
+    }
+    if sc.expectClientRateFollowsHint && abs(Double(refreshRate) - sc.hintHz) > 0.01 {
+        fails.append(String(format: "the client's refresh rate is %.0f Hz but the stream negotiated %.0f Hz", Double(refreshRate), sc.hintHz))
+    }
+    if (m["tail_repeated_fraction"] ?? 0) > sc.maxRepeatFraction {
+        fails.append(String(format: "%.1f%% of display ticks repeated a frame (want <= %.1f%%)", (m["tail_repeated_fraction"] ?? 0) * 100, sc.maxRepeatFraction * 100))
     }
     if Int(m["reconnects"] ?? 0) < sc.minReconnects {
         fails.append("the client did not reconnect although its decoder never recovered")
@@ -267,6 +318,8 @@ EventHandler.shared.start()
 
 Thread {
     let host = Host()
+    DisplaySim.shared.displayHz = sc.displayHz
+    FakeCore.shared.refreshRateHint = Float(sc.hintHz)
     if sc.enterBeforeStream { DisplaySim.shared.start() }
     usleep(500_000)
     for (i, p) in sc.phases.enumerated() {

@@ -135,6 +135,9 @@ struct VideoHandler {
         let fmt = CMFormatDescription(width: Int(FakeNal.readLe(initialNals, 9)), height: Int(FakeNal.readLe(initialNals, 13)),
                                       configId: FakeNal.readLe(initialNals, 5))
         print(fmt)
+        // VideoHandler.swift:185 applyRefreshRate (HARNESS_OLD_RATE=1: the 1.3.6 behaviour, the device default whatever the stream negotiated)
+        refreshRate = ProcessInfo.processInfo.environment["HARNESS_OLD_RATE"] == "1" ? defaultRefreshRate
+            : EventHandler.effectiveRefreshRate(setting: "Default", negotiated: EventHandler.shared.negotiatedRefreshRate, deviceDefault: defaultRefreshRate)
         HarnessLog.shared.event("decoder_created", ["config": "\(fmt.configId)", "size": "\(fmt.width)x\(fmt.height)"])
         return (VTDecompressionSession(format: fmt), fmt)
     }

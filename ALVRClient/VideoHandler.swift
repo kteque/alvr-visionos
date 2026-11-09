@@ -997,7 +997,7 @@ struct VideoHandler {
     static func applyRefreshRate(videoFormat: CMFormatDescription?) {
         let streamFPS = ALVRClientApp.gStore.settings.streamFPS
 
-        refreshRate = Float(streamFPS) ?? defaultRefreshRate
+        refreshRate = EventHandler.effectiveRefreshRate(setting: streamFPS, negotiated: EventHandler.shared.negotiatedRefreshRate, deviceDefault: defaultRefreshRate)
 
         print("Setting refresh rate preference to:", refreshRate)
 

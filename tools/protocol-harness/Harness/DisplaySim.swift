@@ -10,7 +10,7 @@ final class DisplaySim: @unchecked Sendable {
     static let shared = DisplaySim()
 
     var displayHz = 90.0
-    var gpuMs = 6.0
+    var gpuMs = Double(ProcessInfo.processInfo.environment["HARNESS_GPU_MS"] ?? "") ?? 6.0
     var ipd: Float = 0.063
     private var thread: Thread? = nil
     private var running = false
@@ -63,22 +63,30 @@ final class DisplaySim: @unchecked Sendable {
         eh.totalFramesRendered += 1
         var streamingActiveForFrame = eh.streamingActive
         var isReprojected = false
+        var pickedFresh = false
         var queuedFrame: QueuedFrame? = nil
 
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
-        switch eh.pollFrameForDisplay(timeout: 0.005) {
+        let pickStart = CACurrentMediaTime()
+        let pick = eh.pollFrameForDisplay(timeout: 0.005)
+        HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
+        switch pick {
         case .resubmit(let f):
+            HarnessStats.shared.count("pick_resubmit")
             queuedFrame = f
             eh.framesRendered -= 1
             isReprojected = false
         case .fresh(let f):
+            HarnessStats.shared.count("pick_fresh")
+            pickedFresh = true
             queuedFrame = f
         case .reprojected(let f):
+            HarnessStats.shared.count("pick_reprojected")
             queuedFrame = f
             eh.framesRendered -= 1
             isReprojected = true
         case .none:
-            break
+            HarnessStats.shared.count("pick_none")
         }
         if queuedFrame == nil && streamingActiveForFrame { streamingActiveForFrame = false }
         let renderingStreaming = streamingActiveForFrame && queuedFrame != nil
@@ -131,7 +139,8 @@ final class DisplaySim: @unchecked Sendable {
 
         let shown: Shown
         if renderingStreaming && frameIsSuitableForDisplaying && queuedFrame != nil {
-            shown = isReprojected ? .repeated : .new
+            // only a frame taken from the queue is new: a resubmit shows the previous picture again, like a reprojection
+            shown = pickedFresh ? .new : .repeated
         } else {
             shown = .blank
         }
