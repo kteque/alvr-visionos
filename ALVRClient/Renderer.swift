@@ -685,7 +685,13 @@ class Renderer {
     var teleSegN = 0, teleSegOver4 = 0
     var teleSegWorst = [Double](repeating: 0, count: 4), teleSegWorstTotal = 0.0
 
-    func teleSegments(_ seg: [Double]) {
+    // view+tracking split in five: alvr_report_compositor_start, the code up to the lock (pipeline checks), the frameQueueLock take,
+    // logTelemetry + previous-pose conversion, and the rest up to the anchor query (sendTracking and friends).
+    var teleSubMax = [Double](repeating: 0, count: 5), teleSubWorst = [Double](repeating: 0, count: 5), teleSubWorstView = 0.0
+
+    func teleSegments(_ seg: [Double], sub: [Double]) {
+        for i in 0..<5 { teleSubMax[i] = max(teleSubMax[i], sub[i]) }
+        if seg[1] > teleSubWorstView { teleSubWorstView = seg[1]; teleSubWorst = sub }
         let total = seg.reduce(0, +)
         for i in 0..<4 { teleSegSum[i] += seg[i]; teleSegMax[i] = max(teleSegMax[i], seg[i]) }
         teleSegN += 1
@@ -699,8 +705,12 @@ class Renderer {
         let line = String(format: "cpu split mean/max ms: drawable %.2f/%.2f, view+tracking %.2f/%.2f, anchor %.2f/%.2f, encode %.2f/%.2f; %d of %d frames over 4 ms; worst %.2f ms = drawable %.2f + view+tracking %.2f + anchor %.2f + encode %.2f",
                           ms(teleSegSum[0] / n), ms(teleSegMax[0]), ms(teleSegSum[1] / n), ms(teleSegMax[1]), ms(teleSegSum[2] / n), ms(teleSegMax[2]), ms(teleSegSum[3] / n), ms(teleSegMax[3]),
                           teleSegOver4, teleSegN, ms(teleSegWorstTotal), ms(teleSegWorst[0]), ms(teleSegWorst[1]), ms(teleSegWorst[2]), ms(teleSegWorst[3]))
+        let subLine = String(format: "; view+tracking parts max ms: report_start %.2f, pipeline %.2f, queue lock %.2f, log+pose %.2f, send_tracking %.2f; at the worst view+tracking %.2f ms: report_start %.2f, pipeline %.2f, queue lock %.2f, log+pose %.2f, send_tracking %.2f",
+                             ms(teleSubMax[0]), ms(teleSubMax[1]), ms(teleSubMax[2]), ms(teleSubMax[3]), ms(teleSubMax[4]), ms(teleSubWorstView),
+                             ms(teleSubWorst[0]), ms(teleSubWorst[1]), ms(teleSubWorst[2]), ms(teleSubWorst[3]), ms(teleSubWorst[4]))
+        teleSubMax = [Double](repeating: 0, count: 5); teleSubWorst = teleSubMax; teleSubWorstView = 0
         teleSegSum = [0, 0, 0, 0]; teleSegMax = [0, 0, 0, 0]; teleSegN = 0; teleSegOver4 = 0; teleSegWorst = [0, 0, 0, 0]; teleSegWorstTotal = 0
-        return line
+        return line + subLine
     }
 
     func teleDrawCpu(_ seconds: Double) {
@@ -951,6 +961,7 @@ class Renderer {
             alvr_report_compositor_start(queuedFrame!.timestamp, nalViewsPtr)
             queuedFrame = QueuedFrame(imageBuffer: queuedFrame!.imageBuffer, timestamp: queuedFrame!.timestamp, viewParamsValid: true, viewParams: [nalViewsPtr[0], nalViewsPtr[1]])
         }
+        let teleSubA = CACurrentMediaTime()
 
         if EventHandler.shared.alvrInitialized && streamingActiveForFrame {
             let settings = ALVRClientApp.gStore.settings
@@ -1050,9 +1061,11 @@ class Renderer {
         
         //checkEyes(drawable: mainDrawable)
         
+        let teleSubB = CACurrentMediaTime()
         objc_sync_enter(EventHandler.shared.frameQueueLock)
         EventHandler.shared.framesSinceLastDecode += 1
         objc_sync_exit(EventHandler.shared.frameQueueLock)
+        let teleSubC = CACurrentMediaTime()
         
         if queuedFrame != nil && !queuedFrame!.viewParamsValid {
             print("aaaaaaaa bad view params")
@@ -1062,6 +1075,7 @@ class Renderer {
         let vsyncTimeNs = UInt64(vsyncTime * Double(NSEC_PER_SEC))
         logTelemetry(drawable: mainDrawable, vsyncTime: vsyncTime)
         let framePreviouslyPredictedPose = queuedFrame != nil ? WorldTracker.shared.convertSteamVRViewPose(queuedFrame!.viewParams) : nil
+        let teleSubD = CACurrentMediaTime()
         
         // Do NOT move this, just in case, because DeviceAnchor is wonkey and every DeviceAnchor mutates each other.
         if EventHandler.shared.alvrInitialized && EventHandler.shared.lastIpd != -1 {
@@ -1239,7 +1253,8 @@ class Renderer {
         if streamingActiveForFrame {
             let teleCommit = CACurrentMediaTime()
             teleDrawCpu(teleCommit - telePickEnd)
-            teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3])
+            teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3],
+                         sub: [teleSubA - telePhase1, teleSubB - teleSubA, teleSubC - teleSubB, teleSubD - teleSubC, telePhase2 - teleSubD])
         }
         commandBuffer.commit()
         frame.endSubmission()
