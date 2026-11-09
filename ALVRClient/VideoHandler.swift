@@ -7,11 +7,10 @@ import VideoToolbox
 import AVKit
 import QuartzCore
 
-#if !targetEnvironment(simulator)
-let forceFastSecretTextureFormats = true
-#else
+// The two-plane path on the headset too (r8/rg8, r16/rg16 planes and our own YCbCr conversion), no longer Apple's private
+// YCBCR..._420_2P_sRGB formats: those convert and upsample the chroma inside the texture sample, where the shader cannot choose
+// the filter. The shader reconstructs the chroma and the foveation-expanded periphery with a bicubic (Catmull-Rom) filter.
 let forceFastSecretTextureFormats = false
-#endif
 
 
 let defaultRefreshRate = Float(VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1) ? 120.0 : 90.0)

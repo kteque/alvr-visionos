@@ -392,6 +392,34 @@ half4 videoFrameFragmentShader_common(half3 color_in) {
     //color = linearToDisplayP3 * color;
 }
 
+// Catmull-Rom (bicubic) sample with five bilinear fetches (the nine-tap form of M. Pettineo, "Filtering Textures" / the Jimenez
+// five-tap reduction without the four corner taps, weights renormalised): the sampler's own bilinear does two of the four cubic taps
+// per axis. Interpolates the texel centres exactly, so at 1:1 the picture is unchanged; where a stored texel covers more than one
+// output pixel (the stretched periphery of foveated encoding, the half-resolution chroma planes) it is sharper than bilinear.
+half4 sampleCatmullRom5(texture2d<half> tex, float2 uv) {
+    constexpr sampler s(mip_filter::none, mag_filter::linear, min_filter::linear, address::clamp_to_edge);
+    const float2 texSize = float2(tex.get_width(), tex.get_height());
+    const float2 samplePos = uv * texSize;
+    const float2 texPos1 = floor(samplePos - 0.5) + 0.5;
+    const float2 f = samplePos - texPos1;
+    const float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    const float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    const float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    const float2 w3 = f * f * (-0.5 + 0.5 * f);
+    const float2 w12 = w1 + w2;
+    const float2 offset12 = w2 / w12;
+    const float2 p0 = (texPos1 - 1.0) / texSize;
+    const float2 p3 = (texPos1 + 2.0) / texSize;
+    const float2 p12 = (texPos1 + offset12) / texSize;
+    half4 result = tex.sample(s, float2(p12.x, p0.y)) * half(w12.x * w0.y)
+                 + tex.sample(s, float2(p0.x, p12.y)) * half(w0.x * w12.y)
+                 + tex.sample(s, float2(p12.x, p12.y)) * half(w12.x * w12.y)
+                 + tex.sample(s, float2(p3.x, p12.y)) * half(w3.x * w12.y)
+                 + tex.sample(s, float2(p12.x, p3.y)) * half(w12.x * w3.y);
+    const float weightSum = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+    return result / half(weightSum);
+}
+
 half3 videoFrameSampleYpCbCrBiPlanar(float2 texCoord, texture2d<half> in_tex_y, texture2d<half> in_tex_uv) {
     
     float2 sampleCoord;
@@ -404,8 +432,14 @@ half3 videoFrameSampleYpCbCrBiPlanar(float2 texCoord, texture2d<half> in_tex_y, 
     constexpr sampler colorSampler(mip_filter::none,
                                    mag_filter::linear,
                                    min_filter::linear);
-    half4 ySample = in_tex_y.sample(colorSampler, sampleCoord);
-    half4 uvSample = in_tex_uv.sample(colorSampler, sampleCoord);
+    // How many luma texels one output pixel covers: below 1 the stored picture is stretched (the periphery of foveated encoding,
+    // expanded by decompressAxisAlignedCoord), and only there the luma gets the bicubic filter. Derivatives are taken before any branch.
+    const float2 lumaSize = float2(in_tex_y.get_width(), in_tex_y.get_height());
+    const float2 lumaFootprint = fwidth(sampleCoord) * lumaSize;
+    const bool stretched = max(lumaFootprint.x, lumaFootprint.y) < 0.9;
+    half4 ySample = stretched ? sampleCatmullRom5(in_tex_y, sampleCoord) : in_tex_y.sample(colorSampler, sampleCoord);
+    // The chroma planes are half resolution (4:2:0), so they are always stretched against the luma: bicubic everywhere.
+    half4 uvSample = sampleCatmullRom5(in_tex_uv, sampleCoord);
     half4 ycbcr = half4(ySample.r, uvSample.rg, 1.0f);
     
     const matrix_half4x4 transform = matrix_half4x4(
