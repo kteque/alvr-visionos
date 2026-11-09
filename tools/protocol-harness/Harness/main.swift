@@ -268,6 +268,7 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
         m[key + "_mean"] = a.reduce(0, +) / Double(a.count)
         m[key + "_p95"] = a[min(a.count - 1, Int(Double(a.count) * 0.95))]
     }
+    ageStats(settleFrom, end, "age_tail")
     ds.lock.lock(); let sw = ds.switchTimes; ds.lock.unlock()
     if let first = sw.first {
         ageStats(first - 5, first - 0.5, "age_before")
