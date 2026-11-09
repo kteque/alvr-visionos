@@ -460,6 +460,13 @@ class EventHandler: ObservableObject {
     /// Render thread: waits up to `timeout` for a decoded frame. Everything it reads (queue, last shown frame, last
     /// submitted timestamp) is written by other threads (decoder output, command-buffer completion, stream stop), so
     /// every read happens under frameQueueLock and the last shown frame is read once.
+    /// Telemetry only: frames waiting in the queue right now.
+    func queueDepth() -> Int {
+        objc_sync_enter(frameQueueLock)
+        defer { objc_sync_exit(frameQueueLock) }
+        return frameQueue.count
+    }
+
     func pollFrameForDisplay(timeout: Double) -> DisplayPick {
         let startPollTime = CACurrentMediaTime()
         while true {
@@ -1151,4 +1158,5 @@ struct QueuedFrame {
     let timestamp: UInt64
     let viewParamsValid: Bool
     let viewParams: [AlvrViewParams]
+    var enqueuedAt: Double = CACurrentMediaTime()   // telemetry only: when the decoded frame entered the queue
 }

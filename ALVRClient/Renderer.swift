@@ -660,6 +660,13 @@ class Renderer {
     var teleLate = 0                 // display intervals over 15 ms in the window (a skipped refresh at 100 Hz)
     var teleMisses = 0               // frames whose submission ended after the compositor's rendering deadline
     var teleMinSlack: Double = .infinity
+    // what each tick showed (EventHandler.pollFrameForDisplay): fresh frame / the last one again because visionOS skipped its submission / reprojected after the wait / nothing
+    var telePickFresh = 0, telePickResubmit = 0, telePickReproj = 0, telePickNone = 0
+    var teleDepthSum = 0, teleDepthMax = 0, teleDepthTicks = 0      // frames queued when the pick began
+    var teleFreshLate = 0                                           // fresh picks that had to wait (the frame arrived after the pick began)
+    var teleWaitSum: Double = 0, teleWaitMax: Double = 0           // that wait, seconds
+    var teleAgeSum: Double = 0, teleAgeMax: Double = 0             // fresh picks: how long the frame sat in the queue before this tick, seconds
+    var teleFreshWithQueued = 0                                     // resubmits where a fresh frame was waiting (the rule at EventHandler.pollFrameForDisplay)
     var teleLastThermal: Int = -1
 
     /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
@@ -667,6 +674,23 @@ class Renderer {
         let slack = LayerRenderer.Clock().now.duration(to: deadline).timeInterval
         teleMinSlack = min(teleMinSlack, slack)
         if slack < 0 { teleMisses += 1 }
+    }
+
+    /// After the pick: which kind it was, the queue depth when it began, the wait, the age of a fresh frame.
+    func telePick(_ pick: EventHandler.DisplayPick, depth: Int, waited: Double) {
+        teleDepthSum += depth; teleDepthMax = max(teleDepthMax, depth); teleDepthTicks += 1
+        switch pick {
+        case .fresh(let f):
+            telePickFresh += 1
+            let age = CACurrentMediaTime() - f.enqueuedAt
+            teleAgeSum += age; teleAgeMax = max(teleAgeMax, age)
+            if waited > 0.0005 { teleFreshLate += 1; teleWaitSum += waited; teleWaitMax = max(teleWaitMax, waited) }
+        case .resubmit:
+            telePickResubmit += 1
+            if depth > 0 { teleFreshWithQueued += 1 }
+        case .reprojected: telePickReproj += 1; teleWaitSum += waited; teleWaitMax = max(teleWaitMax, waited)
+        case .none: telePickNone += 1
+        }
     }
 
     func teleLog(_ line: String) {
@@ -713,6 +737,14 @@ class Renderer {
             let mean = teleCount > 0 ? teleSum / Double(teleCount) : 0
             teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames, %d over 15 ms; deadline misses %d, min slack %.2f ms; thermal %d; stream target %.0f Hz",
                            mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, teleLate, teleMisses, teleMinSlack.isFinite ? teleMinSlack * 1000 : 0, thermal, refreshRate))
+            let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
+            teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
+                           ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
+                           teleDepthTicks > 0 ? Double(teleDepthSum) / Double(teleDepthTicks) : 0, teleDepthMax,
+                           teleFreshLate, (teleFreshLate + telePickReproj) > 0 ? teleWaitSum / Double(teleFreshLate + telePickReproj) * 1000 : 0, teleWaitMax * 1000,
+                           telePickFresh > 0 ? teleAgeSum / Double(telePickFresh) * 1000 : 0, teleAgeMax * 1000))
+            telePickFresh = 0; telePickResubmit = 0; telePickReproj = 0; telePickNone = 0; teleDepthSum = 0; teleDepthMax = 0; teleDepthTicks = 0
+            teleFreshLate = 0; teleWaitSum = 0; teleWaitMax = 0; teleAgeSum = 0; teleAgeMax = 0; teleFreshWithQueued = 0
             teleLastThermal = thermal
             teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0; teleLate = 0; teleMisses = 0; teleMinSlack = .infinity
         }
@@ -778,7 +810,11 @@ class Renderer {
         lastRoundTripRenderTimestamp = CACurrentMediaTime()
 
         // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread
-        switch EventHandler.shared.pollFrameForDisplay(timeout: 0.005) {
+        let telePickStart = CACurrentMediaTime()
+        let telePickDepth = EventHandler.shared.queueDepth()
+        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.005)
+        if streamingActiveForFrame { telePick(telePicked, depth: telePickDepth, waited: CACurrentMediaTime() - telePickStart) }
+        switch telePicked {
         case .resubmit(let f):
             queuedFrame = f
             EventHandler.shared.framesRendered -= 1
