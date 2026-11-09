@@ -18,6 +18,8 @@ enum Phase {
     /// a free-running game or paced output: frame k leaves at k / fps + noise (uniform +-arrivalJitterMs, not accumulating), and with
     /// probability `spikeProb` a frame is held back by `spikeMs` (a Wi-Fi hiccup). Compare `.game`, whose jitter accumulates.
     case stream(seconds: Double, fps: Double, arrivalJitterMs: Double, spikeProb: Double = 0, spikeMs: Double = 0, poseAgeMs: Double = 30)
+    /// the system switches the display rate and the render thread stalls for `stallMs` (the field showed an 80 ms interval)
+    case switchDisplay(hz: Double, stallMs: Double)
     /// the game stops presenting: the host sends nothing (tools/host/src/pipeline.rs: empty boundary left empty)
     case stall(seconds: Double)
     /// irregular presents: gaps drawn uniformly from minMs...maxMs
@@ -54,6 +56,8 @@ struct Scenario {
     var maxRepeatFraction = 1.0
     /// the client's refresh rate after the stream started must equal the negotiated one (hintHz)
     var expectClientRateFollowsHint = false
+    /// shown-frame age after the last display switch (settled: from 3 s on) must stay under this many ms (0 = not checked)
+    var maxSettledAgeMs = 0.0
 }
 
 let game90 = Phase.game(seconds: 6, fps: 90)
@@ -108,6 +112,23 @@ let scenarios: [Scenario] = [
              phases: [game90, .game(seconds: 25, fps: 98, jitterMs: 4)], displayHz: 100, hintHz: 100),
     Scenario(name: "rate_follows_hint", about: "the stream negotiates 100 Hz: the client's refresh rate (display-link and criteria request) follows it, not the 90 default",
              phases: [game90, .stream(seconds: 6, fps: 100, arrivalJitterMs: 0.5)], displayHz: 100, hintHz: 100, expectClientRateFollowsHint: true),
+    // Display rate switches (the system decides) with a render-thread stall. The host follows the headset: a second stream phase at the new rate.
+    Scenario(name: "sw_100_90_s80", about: "100 -> 90 Hz with an 80 ms render stall, the host follows at once (paced 100 then 90 fps)",
+             phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 80), .stream(seconds: 12, fps: 90, arrivalJitterMs: 0.5)],
+             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+    Scenario(name: "sw_100_90_lag1s", about: "100 -> 90 Hz with an 80 ms stall, the host keeps 100 fps for 1 s before following",
+             phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 80), .stream(seconds: 1, fps: 100, arrivalJitterMs: 0.5), .stream(seconds: 11, fps: 90, arrivalJitterMs: 0.5)],
+             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+    Scenario(name: "sw_90_100_s80", about: "90 -> 100 Hz with an 80 ms stall, the host follows at once",
+             phases: [game90, .stream(seconds: 8, fps: 90, arrivalJitterMs: 0.5), .switchDisplay(hz: 100, stallMs: 80), .stream(seconds: 12, fps: 100, arrivalJitterMs: 0.5)],
+             displayHz: 90, hintHz: 90, maxSettledAgeMs: 14),
+    Scenario(name: "sw_100_96_s40", about: "100 -> 96 Hz with a 40 ms stall",
+             phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 96, stallMs: 40), .stream(seconds: 12, fps: 96, arrivalJitterMs: 0.5)],
+             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+    Scenario(name: "sw_rapid", about: "100 -> 90 -> 100 -> 96 within 6 s with stalls, the host follows each",
+             phases: [game90, .stream(seconds: 6, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 60), .stream(seconds: 2, fps: 90, arrivalJitterMs: 0.5),
+                      .switchDisplay(hz: 100, stallMs: 60), .stream(seconds: 2, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 96, stallMs: 40), .stream(seconds: 12, fps: 96, arrivalJitterMs: 0.5)],
+             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
     Scenario(name: "background_real", about: "the wearer leaves the app: background for 3 s (the client must exit)",
              phases: [game90, .background(seconds: 3), game90], expectExit: true),
 ]
@@ -129,6 +150,7 @@ final class Host: @unchecked Sendable {
         let stamp = core.newestTracking(olderThan: poseAgeMs / 1000) ?? UInt64(CACurrentMediaTime() * 1e9)
         core.lock.lock(); let cfg = core.configId; core.lock.unlock()
         frameIndex &+= 1
+        DisplaySim.shared.noteSent(frameIndex)
         core.deliver(HostFrame(index: frameIndex, timestamp: stamp, isIdr: isIdr, configId: cfg, lossBefore: false))
     }
 
@@ -158,6 +180,9 @@ final class Host: @unchecked Sendable {
         case .irregular(let s, let lo, let hi, let age):
             HarnessLog.shared.event("phase", ["kind": "irregular", "s": "\(s)"])
             cadence(seconds: s, gap: { Double.random(in: lo...hi) / 1000 }, poseAgeMs: age)
+        case .switchDisplay(let hz, let stallMs):
+            HarnessLog.shared.event("phase", ["kind": "switch_display", "hz": "\(hz)", "stall_ms": "\(stallMs)"])
+            DisplaySim.shared.switchDisplay(hz: hz, stallMs: stallMs)
         case .stall(let s):
             HarnessLog.shared.event("phase", ["kind": "stall", "s": "\(s)"])
             sleep(s)
@@ -236,6 +261,24 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
     }
     m["first_new_frame_s"] = firstNew ?? -1
     m["worst_not_new_run_ticks"] = Double(worst)
+    // frame age at display (host send -> tick) around the display switches
+    func ageStats(_ from: Double, _ to: Double, _ key: String) {
+        let a = ticks.filter { $0.t >= from && $0.t < to }.compactMap { $0.ageMs }.sorted()
+        if a.isEmpty { return }
+        m[key + "_mean"] = a.reduce(0, +) / Double(a.count)
+        m[key + "_p95"] = a[min(a.count - 1, Int(Double(a.count) * 0.95))]
+    }
+    ds.lock.lock(); let sw = ds.switchTimes; ds.lock.unlock()
+    if let first = sw.first {
+        ageStats(first - 5, first - 0.5, "age_before")
+        ageStats(first, first + 1, "age_0_1s")
+        ageStats(first + 1, first + 3, "age_1_3s")
+        ageStats(first + 3, end, "age_settled")
+        m["picked_catchup_drops"] = Double(EventHandler.shared.catchUpDrops)
+    }
+    if sc.maxSettledAgeMs > 0, let a = m["age_settled_mean"], a > sc.maxSettledAgeMs {
+        fails.append(String(format: "frames shown after the switch are %.1f ms old on average (want <= %.1f ms)", a, sc.maxSettledAgeMs))
+    }
     core.lock.lock()
     m["idr_requests"] = Double(core.idrRequestTimes.count)
     m["reconnects"] = Double(core.reconnects)
@@ -313,6 +356,7 @@ HarnessLog.shared.onFinish = {
 }
 
 // ALVRClientApp.swift:128-130 (scene active): initialise the core, start the event thread
+if ProcessInfo.processInfo.environment["HARNESS_OLD_PICK"] == "1" { EventHandler.catchUpPick = false }   // the pick before the catch-up rule
 EventHandler.shared.initializeAlvr()
 EventHandler.shared.start()
 

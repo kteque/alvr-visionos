@@ -17,9 +17,20 @@ final class DisplaySim: @unchecked Sendable {
 
     // what the wearer saw, one entry per display tick
     enum Shown { case blank, new, repeated }
-    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32? }
+    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double? }
     let lock = NSLock()
     var ticks: [Tick] = []
+    // when the host sent each frame (frame age at the display tick = tick time - this)
+    var sentAt: [UInt32: Double] = [:]
+    func noteSent(_ index: UInt32) { lock.lock(); sentAt[index] = HarnessLog.shared.now(); lock.unlock() }
+    // a display rate switch (the system picks 90/96/100 Hz) with the render thread stalled for `stallMs` at that moment
+    var pendingStallMs = 0.0
+    var switchTimes: [Double] = []
+    func switchDisplay(hz: Double, stallMs: Double) {
+        lock.lock(); switchTimes.append(HarnessLog.shared.now()); lock.unlock()
+        displayHz = hz
+        pendingStallMs = stallMs
+    }
 
     func start() {
         running = true
@@ -38,9 +49,15 @@ final class DisplaySim: @unchecked Sendable {
     private func loop() {
         // MetalClientSystem.swift:68
         EventHandler.shared.handleHeadsetRemovedOrReentry()
-        let period = 1.0 / displayHz
+        var period = 1.0 / displayHz
         var nextVsync = CACurrentMediaTime() + period
         while running && EventHandler.shared.renderStarted {
+            if abs(1.0 / displayHz - period) > 1e-9 {
+                // the compositor's schedule follows the new rate from the next frame (and the stall, if any, delays it)
+                period = 1.0 / displayHz
+                nextVsync = CACurrentMediaTime() + period + pendingStallMs / 1000
+                if pendingStallMs > 0 { usleep(UInt32(pendingStallMs * 1000)); pendingStallMs = 0 }
+            }
             // queryNextFrame/predictTiming + Clock.wait(until: optimalInputTime): optimal input ~ one period before presentation
             let optimalInput = nextVsync - period
             let now = CACurrentMediaTime()
@@ -145,7 +162,10 @@ final class DisplaySim: @unchecked Sendable {
             shown = .blank
         }
         lock.lock()
-        ticks.append(Tick(t: HarnessLog.shared.now(), shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex))
+        let nowT = HarnessLog.shared.now()
+        var ageMs: Double? = nil
+        if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)

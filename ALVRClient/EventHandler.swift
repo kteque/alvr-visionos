@@ -138,6 +138,11 @@ class EventHandler: ObservableObject {
 
     var frameQueue = [QueuedFrame]()
     var frameQueueLastTimestamp: UInt64 = 0
+    /// After a stall (a display rate switch, a slow frame) the queue holds 2 and arrivals match the display rate, so it never drains and
+    /// every tick shows a frame a period older than it has to be. With this on, a pick that finds 2 queued frames shows the newer and
+    /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
+    static var catchUpPick = true
+    var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
     var queueOverflowDrops = 0   // telemetry: decoded frames discarded because the queue already held 2 (read under frameQueueLock)
     var frameQueueLastImageBuffer: CVImageBuffer? = nil
     var lastQueuedFrame: QueuedFrame? = nil
@@ -489,6 +494,10 @@ class EventHandler: ObservableObject {
                 return .resubmit(last)
             }
             if !frameQueue.isEmpty {
+                if EventHandler.catchUpPick && frameQueue.count >= 2 {
+                    catchUpDrops += frameQueue.count - 1
+                    frameQueue.removeFirst(frameQueue.count - 1)
+                }
                 let f = frameQueue.removeFirst()
                 objc_sync_exit(frameQueueLock)
                 return .fresh(f)

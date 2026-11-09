@@ -2179,6 +2179,8 @@ class WorldTracker {
     // TODO: figure out how stable Apple's predictions are into the future
     // targetTimestamp: The timestamp of the pose we will send to ALVR--capped by how far we can predict forward.
     // realTargetTimestamp: The timestamp we tell ALVR, which always includes the full round-trip prediction.
+    static let refetchAlternation = true
+    var teleTrkSkipped = false
     var teleTrkLast = [Double](repeating: 0, count: 4)
     var teleTrkIters = 0
 
@@ -2197,7 +2199,11 @@ class WorldTracker {
         // HACK: In order to get the instantaneous velocity (e.g. with current accelerometer data factored in)
         // we have to query the last head timestamp again (the anchor will be different than the last time we asked)
         // HACK: Device anchors have had hidden state in the past, fetch this first
-        var deviceAnchorLastRefetched = worldTracking.queryDeviceAnchor(atTimestamp: lastHeadTimestamp)
+        // A/B test (see docs/VISIONOS_PERFORMANCE_PLAN.md, section A): every other 60 s the refetch query is skipped and the head velocity
+        // is taken against the previous frame's stored pose instead. The telemetry line says which mode each window ran in.
+        let skipRefetch = WorldTracker.refetchAlternation && Int(CACurrentMediaTime() / 60) % 2 == 1
+        teleTrkSkipped = skipRefetch
+        var deviceAnchorLastRefetched = skipRefetch ? nil : worldTracking.queryDeviceAnchor(atTimestamp: lastHeadTimestamp)
         teleT1 = CACurrentMediaTime()
         
         Task {
@@ -2525,7 +2531,7 @@ class WorldTracker {
         // OpenXR defines the headset pose as the average of the two view transforms, so we have to do this anyhow.
         let avgViewTransformXYZ = (EventHandler.shared.viewTransforms[0].columns.3.asFloat3() + EventHandler.shared.viewTransforms[1].columns.3.asFloat3()) * 0.5
         let headPose = AlvrPose(simd_quaternion(transform), transform.columns.3.asFloat3() + (transform.columns.0.asFloat3() * avgViewTransformXYZ.x) + (transform.columns.1.asFloat3() * avgViewTransformXYZ.y) + (transform.columns.2.asFloat3() * avgViewTransformXYZ.z))
-        lastHeadPose = AlvrPose(simd_quaternion(transformLastRefetched), transformLastRefetched.columns.3.asFloat3() + (transformLastRefetched.columns.0.asFloat3() * avgViewTransformXYZ.x) + (transformLastRefetched.columns.1.asFloat3() * avgViewTransformXYZ.y) + (transformLastRefetched.columns.2.asFloat3() * avgViewTransformXYZ.z))
+        if !skipRefetch { lastHeadPose = AlvrPose(simd_quaternion(transformLastRefetched), transformLastRefetched.columns.3.asFloat3() + (transformLastRefetched.columns.0.asFloat3() * avgViewTransformXYZ.x) + (transformLastRefetched.columns.1.asFloat3() * avgViewTransformXYZ.y) + (transformLastRefetched.columns.2.asFloat3() * avgViewTransformXYZ.z)) }
         if let p = lastHeadPose {
             let lastPose = p
             let pose = headPose

@@ -694,7 +694,10 @@ class Renderer {
     var teleTrkMax = [Double](repeating: 0, count: 4), teleTrkWorst = [Double](repeating: 0, count: 4)
     var teleTrkWorstTotal = 0.0, teleTrkWorstIters = 0, teleTrkMaxIters = 0, teleTrkRetries = 0, teleTrkN = 0
 
-    func teleSegments(_ seg: [Double], sub: [Double], trk: [Double], trkIters: Int) {
+    var teleTrkSkippedFrames = 0
+
+    func teleSegments(_ seg: [Double], sub: [Double], trk: [Double], trkIters: Int, skippedRefetch: Bool) {
+        if skippedRefetch { teleTrkSkippedFrames += 1 }
         for i in 0..<4 { teleTrkMax[i] = max(teleTrkMax[i], trk[i]) }
         let trkTotal = trk.reduce(0, +)
         if trkTotal > teleTrkWorstTotal { teleTrkWorstTotal = trkTotal; teleTrkWorst = trk; teleTrkWorstIters = trkIters }
@@ -722,8 +725,10 @@ class Renderer {
         let trkLine = String(format: "; send_tracking parts max ms: refetch %.2f, walk-back loop %.2f, anchor handling %.2f, hands+send %.2f; slowest call %.2f ms: refetch %.2f, loop %.2f (%d queries), anchor %.2f, hands+send %.2f; calls needing a retry %d of %d, most queries %d",
                              ms(teleTrkMax[0]), ms(teleTrkMax[1]), ms(teleTrkMax[2]), ms(teleTrkMax[3]), ms(teleTrkWorstTotal),
                              ms(teleTrkWorst[0]), ms(teleTrkWorst[1]), teleTrkWorstIters, ms(teleTrkWorst[2]), ms(teleTrkWorst[3]), teleTrkRetries, teleTrkN, teleTrkMaxIters)
+        let modeLine = String(format: "; refetch query skipped on %d of %d frames", teleTrkSkippedFrames, teleTrkN)
+        teleTrkSkippedFrames = 0
         teleTrkMax = [Double](repeating: 0, count: 4); teleTrkWorst = teleTrkMax; teleTrkWorstTotal = 0; teleTrkWorstIters = 0; teleTrkMaxIters = 0; teleTrkRetries = 0; teleTrkN = 0
-        return line + subLine + trkLine
+        return line + subLine + trkLine + modeLine
     }
 
     func teleDrawCpu(_ seconds: Double) {
@@ -1268,7 +1273,7 @@ class Renderer {
             teleDrawCpu(teleCommit - telePickEnd)
             teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3],
                          sub: [teleSubA - telePhase1, teleSubB - teleSubA, teleSubC - teleSubB, teleSubD - teleSubC, telePhase2 - teleSubD],
-                         trk: WorldTracker.shared.teleTrkLast, trkIters: WorldTracker.shared.teleTrkIters)
+                         trk: WorldTracker.shared.teleTrkLast, trkIters: WorldTracker.shared.teleTrkIters, skippedRefetch: WorldTracker.shared.teleTrkSkipped)
         }
         commandBuffer.commit()
         frame.endSubmission()
