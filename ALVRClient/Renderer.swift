@@ -679,6 +679,30 @@ class Renderer {
     var teleGpuSum = 0.0, teleGpuMax = 0.0, teleGpuN = 0
     var teleDoneSlackMin = Double.infinity, teleDoneLate = 0, teleDoneN = 0
 
+    // Where the render thread's CPU time goes (read-only, render thread only): command buffer + drawable, view declaration + tracking,
+    // device anchor query, encode + the rest up to `commit`. A frame over 4 ms keeps its split; the window's worst frame is printed.
+    var teleSegSum = [Double](repeating: 0, count: 4), teleSegMax = [Double](repeating: 0, count: 4)
+    var teleSegN = 0, teleSegOver4 = 0
+    var teleSegWorst = [Double](repeating: 0, count: 4), teleSegWorstTotal = 0.0
+
+    func teleSegments(_ seg: [Double]) {
+        let total = seg.reduce(0, +)
+        for i in 0..<4 { teleSegSum[i] += seg[i]; teleSegMax[i] = max(teleSegMax[i], seg[i]) }
+        teleSegN += 1
+        if total > 0.004 { teleSegOver4 += 1 }
+        if total > teleSegWorstTotal { teleSegWorstTotal = total; teleSegWorst = seg }
+    }
+
+    func teleSegmentsLine() -> String {
+        let n = Double(max(teleSegN, 1))
+        func ms(_ x: Double) -> Double { x * 1000 }
+        let line = String(format: "cpu split mean/max ms: drawable %.2f/%.2f, view+tracking %.2f/%.2f, anchor %.2f/%.2f, encode %.2f/%.2f; %d of %d frames over 4 ms; worst %.2f ms = drawable %.2f + view+tracking %.2f + anchor %.2f + encode %.2f",
+                          ms(teleSegSum[0] / n), ms(teleSegMax[0]), ms(teleSegSum[1] / n), ms(teleSegMax[1]), ms(teleSegSum[2] / n), ms(teleSegMax[2]), ms(teleSegSum[3] / n), ms(teleSegMax[3]),
+                          teleSegOver4, teleSegN, ms(teleSegWorstTotal), ms(teleSegWorst[0]), ms(teleSegWorst[1]), ms(teleSegWorst[2]), ms(teleSegWorst[3]))
+        teleSegSum = [0, 0, 0, 0]; teleSegMax = [0, 0, 0, 0]; teleSegN = 0; teleSegOver4 = 0; teleSegWorst = [0, 0, 0, 0]; teleSegWorstTotal = 0
+        return line
+    }
+
     func teleDrawCpu(_ seconds: Double) {
         teleDrawLock.lock(); teleCpuSum += seconds; teleCpuMax = max(teleCpuMax, seconds); teleCpuN += 1; teleDrawLock.unlock()
     }
@@ -775,6 +799,7 @@ class Renderer {
             teleLog("queue overflow drops \(dropsTotal - teleDropsPrev) in the window (decoded frames discarded, the queue holds 2)")
             teleDropsPrev = dropsTotal
             teleLog(teleDrawLine())
+            teleLog(teleSegmentsLine())
             let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
             teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
                            ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
@@ -918,6 +943,7 @@ class Renderer {
         var drawables: [LayerRenderer.Drawable] = [_drawable]
 #endif
         
+        let telePhase1 = CACurrentMediaTime()
         let nalViewsPtr = UnsafeMutablePointer<AlvrViewParams>.allocate(capacity: 2)
         defer { nalViewsPtr.deallocate() }
         
@@ -1075,7 +1101,9 @@ class Renderer {
 #endif
         }
         
+        let telePhase2 = CACurrentMediaTime()
         let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
+        let telePhase3 = CACurrentMediaTime()
         
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
             if EventHandler.shared.streamingActive {
@@ -1208,7 +1236,11 @@ class Renderer {
             fadeInOverlayAlpha = 0.0
         }
         
-        if streamingActiveForFrame { teleDrawCpu(CACurrentMediaTime() - telePickEnd) }
+        if streamingActiveForFrame {
+            let teleCommit = CACurrentMediaTime()
+            teleDrawCpu(teleCommit - telePickEnd)
+            teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3])
+        }
         commandBuffer.commit()
         frame.endSubmission()
         teleSubmitted(deadline: timing.renderingDeadline)
