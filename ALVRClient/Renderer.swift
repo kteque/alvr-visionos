@@ -656,8 +656,18 @@ class Renderer {
     var teleSum: Double = 0
     var teleMin: Double = .infinity
     var teleMax: Double = 0
-    var teleFirstLogged = false
+    var teleGeometryLogged = false   // reset when streaming stops, so each stream start logs the geometry again (the first drawable comes before the client's log connection exists)
+    var teleLate = 0                 // display intervals over 15 ms in the window (a skipped refresh at 100 Hz)
+    var teleMisses = 0               // frames whose submission ended after the compositor's rendering deadline
+    var teleMinSlack: Double = .infinity
     var teleLastThermal: Int = -1
+
+    /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
+    func teleSubmitted(deadline: LayerRenderer.Clock.Instant) {
+        let slack = LayerRenderer.Clock().now.duration(to: deadline).timeInterval
+        teleMinSlack = min(teleMinSlack, slack)
+        if slack < 0 { teleMisses += 1 }
+    }
 
     func teleLog(_ line: String) {
         ("[tele] " + line).withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
@@ -671,13 +681,16 @@ class Renderer {
             let d = vsyncTime - teleLastVsync
             if d > 0 && d < 0.1 {
                 teleCount += 1; teleSum += d; teleMin = min(teleMin, d); teleMax = max(teleMax, d)
+                if d > 0.015 { teleLate += 1 }
             }
         }
         teleLastVsync = vsyncTime
         if teleWindowStart == 0 { teleWindowStart = now }
 
-        if !teleFirstLogged {
-            teleFirstLogged = true
+        let streaming = EventHandler.shared.alvrInitialized && EventHandler.shared.streamingActive
+        if !streaming { teleGeometryLogged = false }
+        if streaming && !teleGeometryLogged {
+            teleGeometryLogged = true
             let tex = drawable.colorTextures.first
             teleLog(String(format: "drawable color %ldx%ld layers %ld views %ld", tex?.width ?? 0, tex?.height ?? 0, tex?.arrayLength ?? 0, drawable.views.count))
             for i in 0..<drawable.views.count {
@@ -698,10 +711,10 @@ class Renderer {
         let thermalChanged = thermal != teleLastThermal
         if (now - teleWindowStart >= 10.0 && teleCount > 0) || thermalChanged {
             let mean = teleCount > 0 ? teleSum / Double(teleCount) : 0
-            teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames; thermal %d; stream target %.0f Hz",
-                           mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, thermal, refreshRate))
+            teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames, %d over 15 ms; deadline misses %d, min slack %.2f ms; thermal %d; stream target %.0f Hz",
+                           mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, teleLate, teleMisses, teleMinSlack.isFinite ? teleMinSlack * 1000 : 0, thermal, refreshRate))
             teleLastThermal = thermal
-            teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0
+            teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0; teleLate = 0; teleMisses = 0; teleMinSlack = .infinity
         }
     }
 
@@ -1114,6 +1127,7 @@ class Renderer {
         
         commandBuffer.commit()
         frame.endSubmission()
+        teleSubmitted(deadline: timing.renderingDeadline)
         
         EventHandler.shared.publishShownFrame(queuedFrame)
         EventHandler.shared.lastQueuedFramePose = framePreviouslyPredictedPose
