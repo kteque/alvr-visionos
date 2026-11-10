@@ -25,6 +25,8 @@ final class DisplaySim: @unchecked Sendable {
     /// Rig: a frame that ends after its own presentation time misses the compositor's deadline: that tick shows the previous picture and the next
     /// presentation time skips ahead (a doubled interval, as the field's `display interval` lines show). false = the protocol harness's old rule.
     nonisolated(unsafe) var strictDeadline = false
+    nonisolated(unsafe) var slackMs = 4.3
+    nonisolated(unsafe) var lastExtraMs = 0.0
     let lock = NSLock()
     var ticks: [Tick] = []
     // when the host sent each frame (frame age at the display tick = tick time - this)
@@ -71,11 +73,12 @@ final class DisplaySim: @unchecked Sendable {
             if optimalInput > now { usleep(UInt32((optimalInput - now) * 1e6)) }
             renderFrame(presentation: nextVsync)
             if strictDeadline {
+                // Field calibration: a frame misses its deadline when the render thread's extra cost (a blocked tracking query: window maxima 4.4 ms,
+                // up to 14.4; a stall at worst 80 ms or more) is over the slack (4.3 ms); it is late by that excess, in whole periods, so the
+                // compositor's next presentation time skips ahead: 20 ms intervals mostly, 30 ms for the biggest spikes, 80 ms for a stall.
                 let cur = nextVsync
-                // the frame ends when its GPU work does (gpuMs after the CPU side returns): that is what the compositor's deadline is measured against
-                let now2 = CACurrentMediaTime() + gpuMs / 1000
-                if now2 > cur {
-                    let k = ((now2 - cur) / period).rounded(.up)
+                if lastExtraMs > slackMs {
+                    let k = ((lastExtraMs - slackMs) / 1000 / period).rounded(.up)
                     nextVsync = cur + (k + 1) * period
                     lock.lock(); if !ticks.isEmpty { ticks[ticks.count - 1].missed = true }; lock.unlock()
                     HarnessStats.shared.count("missed_deadline")
@@ -188,7 +191,8 @@ final class DisplaySim: @unchecked Sendable {
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)
-        usleep(UInt32((1.0 + (extraCostMs?() ?? 0)) * 1000))
+        lastExtraMs = extraCostMs?() ?? 0
+        usleep(UInt32((1.0 + lastExtraMs) * 1000))
 
         // Renderer.swift:1044-1045
         eh.publishShownFrame(queuedFrame)
