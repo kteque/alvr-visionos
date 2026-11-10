@@ -38,14 +38,27 @@ DisplaySim.shared.displayHz = Double(argValue("--display-hz") ?? "") ?? 100
 func writeReport() {
     let ds = DisplaySim.shared
     ds.lock.lock(); let ticks = ds.ticks; let sw = ds.switchTimes; ds.lock.unlock()
-    var csv = "t,shown,frame\n"
-    for t in ticks { csv += String(format: "%.4f,%@,%d\n", t.t, "\(t.shown)", Int(t.frameIndex ?? 0)) }
+    var csv = "t,shown,frame,bytes\n"
+    for t in ticks { csv += String(format: "%.4f,%@,%d,%d\n", t.t, "\(t.shown)", Int(t.frameIndex ?? 0), RigFrames.shared.size(t.frameIndex ?? 0)) }
+    // the window where game content was on screen: from the first to the last tick that showed a content-sized frame
+    let content = ticks.enumerated().filter { RigFrames.shared.size($0.element.frameIndex ?? 0) >= RigFrames.contentBytes }.map { $0.offset }
     try? csv.write(toFile: "\(outDir)/ticks.csv", atomically: true, encoding: .utf8)
     let n = Double(max(ticks.count, 1))
     let new = Double(ticks.filter { $0.shown == .new }.count), rep = Double(ticks.filter { $0.shown == .repeated }.count)
     let blank = Double(ticks.filter { $0.shown == .blank }.count)
     var m: [String: Double] = ["ticks": n, "new": new, "repeated": rep, "blank": blank, "new_fraction": new / n, "switches": Double(sw.count),
                                "decoded_frames": Double(HarnessStats.shared.get("decoded")), "catchup_drops": Double(EventHandler.shared.catchUpDrops)]
+    if let a = content.first, let b = content.last, b > a {
+        let w = Array(ticks[a...b]); let wn = Double(w.count)
+        m["win_ticks"] = wn; m["win_s"] = w.last!.t - w.first!.t
+        m["win_new"] = Double(w.filter { $0.shown == .new }.count); m["win_new_fraction"] = m["win_new"]! / wn
+        m["win_repeated_fraction"] = Double(w.filter { $0.shown == .repeated }.count) / wn
+        m["win_blank_fraction"] = Double(w.filter { $0.shown == .blank }.count) / wn
+        // doubled intervals: a new frame followed by a tick without one, counted per 1000 ticks, and the longest run of ticks without a new frame
+        var run = 0, worst = 0, gaps = 0
+        for t in w { if t.shown == .new { if run >= 1 { gaps += 1 }; run = 0 } else { run += 1; worst = max(worst, run) } }
+        m["win_new_gaps_per_1000"] = Double(gaps) / wn * 1000; m["win_worst_run_ticks"] = Double(worst)
+    }
     let st = HarnessStats.shared
     st.lock.lock(); for (k, v) in st.counters { m["ev_" + k] = Double(v) }; m["decoded_frames"] = Double(st.decodedFrames); st.lock.unlock()
     if let d = try? JSONSerialization.data(withJSONObject: m, options: [.prettyPrinted, .sortedKeys]) {

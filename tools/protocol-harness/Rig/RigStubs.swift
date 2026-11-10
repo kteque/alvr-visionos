@@ -161,8 +161,9 @@ struct VideoHandler {
     /// modelled decode time run on the delay line (RigNet), in order, and the picture is handed to the callback from there.
     static func feedVideoIntoDecoder(decompressionSession: VTDecompressionSession, nals: UnsafeMutableBufferPointer<UInt8>, timestamp: UInt64, videoFormat: CMFormatDescription, codec: Int, callback: @escaping (_ imageBuffer: CVImageBuffer?) -> Void) {
         let isIdr = RigNal.isIdr(nals, codec: codec)
+        let bytes = nals.count
         RigNet.shared.submit(isIdr: isIdr) {
-            let (_, image) = HarnessDecoder.decode(session: decompressionSession, isIdr: isIdr, timestamp: timestamp)
+            let (_, image) = HarnessDecoder.decode(session: decompressionSession, isIdr: isIdr, timestamp: timestamp, bytes: bytes)
             callback(image)
         }
     }
@@ -242,12 +243,24 @@ final class RigNet: @unchecked Sendable {
 final class HarnessDecoder {
     nonisolated(unsafe) static var counter: UInt32 = 0
     nonisolated(unsafe) static var rng = RigRng(state: 0xD1B54A32D192ED03)
-    static func decode(session: VTDecompressionSession, isIdr: Bool, timestamp: UInt64) -> (OSStatus, CVImageBuffer?) {
+    static func decode(session: VTDecompressionSession, isIdr: Bool, timestamp: UInt64, bytes: Int) -> (OSStatus, CVImageBuffer?) {
         let ms = max(0.5, RigConfig.decodeMs + RigConfig.decodeSdMs * rng.gauss()) * (isIdr ? 2.0 : 1.0)
         usleep(UInt32(ms * 1000))
         counter &+= 1
+        RigFrames.shared.note(index: counter, bytes: bytes)
         session.decodedCount += 1
         HarnessStats.shared.decoded(index: counter, isIdr: isIdr)
         return (noErr, CVImageBuffer(frameIndex: counter, timestamp: timestamp))
     }
+}
+
+/// Size of every decoded frame: the streamer's idle (green) frames are tiny, the game's are not, so the size says which ticks show content.
+final class RigFrames: @unchecked Sendable {
+    static let shared = RigFrames()
+    private let lock = NSLock()
+    private var bytes: [UInt32: Int] = [:]
+    func note(index: UInt32, bytes b: Int) { lock.lock(); bytes[index] = b; lock.unlock() }
+    func size(_ index: UInt32) -> Int { lock.lock(); defer { lock.unlock() }; return bytes[index] ?? 0 }
+    /// frames at or above this size are game content (idle frames are a few hundred bytes)
+    static let contentBytes = 8000
 }
