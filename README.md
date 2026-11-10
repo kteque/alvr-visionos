@@ -5,7 +5,7 @@ PC runs the game through AirFrameXR's OpenXR runtime (frame generation, foveated
 the ALVR v20 protocol, and this app shows it on the Vision Pro with hand and PlayStation VR2 Sense controller
 tracking.
 
-Version 1.3.1 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
+Version 1.3.8 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
 
 ## Credits
 
@@ -23,6 +23,11 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
 **Picture**
 
 - Metal renderer only. The RealityKit renderer and its options are removed, so there is one code path to tune.
+- Reconstruction filters, always on (1.3.8): the colour planes (4:2:0, half resolution) are rebuilt with a bicubic
+  (Catmull-Rom) filter instead of the bilinear one the hardware formats use, and the luma gets the same filter where the
+  encoded picture is stretched on screen (the periphery of a foveated stream, a small stream shown large). Where one
+  encoded pixel covers one screen pixel the picture is unchanged. Colour edges are cleaner and the stretched areas sharper;
+  nothing is sharpened or added, so any sharpening stays on the streamer. Details under 1.3.8.
 - Field of view: the app declares the frustum the compositor asks for, as the stock app does at FoV Scale 1, so an
   uncalibrated wearer sees the whole panel. The wearer's own rectangle is set on the PC (the streamer's FOV card or
   the Vision Pro profile, 0.97 / 0.71 / 0.69 / 0.63) and only changes what the game renders. 1.2.0 to 1.3.1 cut the
@@ -76,6 +81,32 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
 
 Same as upstream: see the [Building](https://github.com/alvr-org/alvr-visionos/wiki/Building) wiki page. The CI
 workflow files show the exact commands (Rust client core, cbindgen, `repack_alvr_client.sh`, then `xcodebuild`).
+
+## 1.3.8
+
+Picture quality: two changes in the shader and the texture path, no setting for either.
+
+- **Bicubic chroma.** The two colour planes of the 4:2:0 picture are half the luma resolution, so they are always enlarged.
+  They are now sampled with a Catmull-Rom filter (`sampleCatmullRom5` in `Shaders.metal`: five bilinear taps with the weights
+  renormalised, so the cost is five texture reads instead of the full sixteen). It passes exactly through the stored values, so
+  flat colour and 1:1 areas do not change; colour fringes on edges (red on dark, text on a coloured background) are tighter.
+- **Bicubic luma where the picture is stretched.** The same filter is used for brightness only where one stored texel covers
+  more than about one screen pixel (decided per pixel from the sampling footprint): the foveated periphery, or a stream
+  encoded below the screen's resolution. Elsewhere the plain bilinear sample is kept, so the centre costs nothing extra.
+- **Own colour conversion.** To choose the filter, the video is read as two plain planes (`r8`/`rg8`, `r16`/`rg16` for 10-bit) and
+  converted with the YCbCr matrix of the stream's encoding, instead of Apple's private converting formats, which filter the
+  colour inside the sample where the shader cannot reach. The colour was checked on a Vision Pro by the owner (the first
+  build with the filters: colours and sharpness good). `forceFastSecretTextureFormats` in `VideoHandler.swift` goes back to the old formats
+  with one constant, filters and all.
+- **Cost, measured on the device** (lines `[tele] draw over ...` in the streamer's `alvr.log`): the GPU draw takes about
+  4.0 ms per frame at 100 Hz (2.2 ms with the hardware formats and no filters, on a different, larger stream, so the two
+  numbers are not a clean comparison; the filter's share is at most the difference and is largest on a small stream). In
+  196,388 frames, 4 command buffers finished after their presentation time; the GPU is not what misses a frame.
+- Not in the client on purpose: sharpening (contrast adaptive or otherwise) alters the image and is done on the streamer.
+
+Not picture: the frame pick shows the newer of two queued frames after a stall (less lag after a refresh-rate switch), the
+client's refresh rate follows the rate the stream negotiates, and the `[tele]` lines in `alvr.log` (display interval, draw
+cost, pick, CPU split) that these were measured with. See `docs/VISIONOS_TELEMETRY_LEARNINGS.md` in the AirFrameXR repository.
 
 ## 1.3.6
 
