@@ -180,14 +180,6 @@ struct VideoHandler {
             return (nil, nil)
         }
         
-        // Telemetry only (additional_telemetry): is the decoder the hardware one? One `[tele]` line per session.
-        if let session = decompressionSession {
-            var hw: CFTypeRef? = nil
-            let st = VTSessionCopyProperty(session, key: kVTDecompressionPropertyKey_UsingHardwareAcceleratedVideoDecoder, allocator: nil, valueOut: &hw)
-            let dims = CMVideoFormatDescriptionGetDimensions(videoFormat!)
-            let codec = CMFormatDescriptionGetMediaSubType(videoFormat!)
-            "[tele] decoder hardware \(st == 0 ? String(describing: hw) : "unknown (\(st))") codec \(codec) \(dims.width)x\(dims.height)".withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
-        }
 
         // Optimize display for 24P film viewing if selected
         VideoHandler.applyRefreshRate(videoFormat: videoFormat)
@@ -998,8 +990,11 @@ struct VideoHandler {
 
         refreshRate = EventHandler.effectiveRefreshRate(setting: streamFPS, negotiated: EventHandler.shared.negotiatedRefreshRate, deviceDefault: defaultRefreshRate)
 
-        // The display is asked for 100 Hz when the stream runs at 90: the Vision Pro's 100 Hz mode performed better than 90 Hz in the field
-        // (fewer missed frames, 2026-11-10). The stream rate (refreshRate, used for the thresholds) is unchanged; visionOS still decides.
+        // HACK, on purpose: when the streamer asks for 90 Hz the display is asked for 100 Hz (every Vision Pro, M5 included, so there is one
+        // rule to maintain). On the M2 headset the 100 Hz mode performed better than 90 Hz in the field (about 3 deadline misses per 1000
+        // frames on the 100 Hz grid against 23 in a real 90 Hz stay, 2026-11-10), and Apple's own 100 Hz mode looks like a workaround for a
+        // 90 Hz problem. The stream keeps the negotiated rate (refreshRate: the thresholds, the host's phase lock); the host measures the
+        // display's real period and follows it. visionOS decides in the end: this is a request, not a switch.
         let displayRequest: Float = (refreshRate == 90) ? 100 : refreshRate
         print("Setting refresh rate preference to:", displayRequest, "(stream", refreshRate, ")")
 

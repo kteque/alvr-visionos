@@ -649,238 +649,6 @@ class Renderer {
         }
     }
     
-    // MARK: - Read-only telemetry (branch additional_telemetry): `[tele]` lines in the streamer's log, no state written, no behaviour change
-    var teleLastVsync: Double = 0
-    var teleWindowStart: Double = 0
-    var teleCount = 0
-    var teleSum: Double = 0
-    var teleMin: Double = .infinity
-    var teleMax: Double = 0
-    var teleGeometryLogged = false   // reset when streaming stops, so each stream start logs the geometry again (the first drawable comes before the client's log connection exists)
-    var teleLate = 0                 // display intervals over 15 ms in the window (a skipped refresh at 100 Hz)
-    var teleMisses = 0               // frames whose submission ended after the compositor's rendering deadline
-    var teleMinSlack: Double = .infinity
-    var teleDropsPrev = 0
-    var teleLastWindowMean: Double = 0
-    // what each tick showed (EventHandler.pollFrameForDisplay): fresh frame / the last one again because visionOS skipped its submission / reprojected after the wait / nothing
-    var telePickFresh = 0, telePickResubmit = 0, telePickReproj = 0, telePickNone = 0
-    var teleDepthSum = 0, teleDepthMax = 0, teleDepthTicks = 0      // frames queued when the pick began
-    var teleFreshLate = 0                                           // fresh picks that had to wait (the frame arrived after the pick began)
-    var teleWaitSum: Double = 0, teleWaitMax: Double = 0           // that wait, seconds
-    var teleAgeSum: Double = 0, teleAgeMax: Double = 0             // fresh picks: how long the frame sat in the queue before this tick, seconds
-    var teleFreshWithQueued = 0                                     // resubmits where a fresh frame was waiting (the rule at EventHandler.pollFrameForDisplay)
-    var teleLastThermal: Int = -1
-
-    // Read-only (branch pose_telemetry), render thread only.
-    // Where the latency sits between the decoded frame and the display: Apple's own lead (optimal input time -> presentation time, deadline -> presentation),
-    // our wake-up and wait, and how long a fresh frame lives from the decoder queue to its presentation.
-    var teleDesignLead = TeleSeries()      // presentationTime - optimalInputTime of the drawable's frame timing
-    var teleDeadlineLead = TeleSeries()    // presentationTime - renderingDeadline
-    var teleWakeLate = TeleSeries()        // end of the wait for optimalInputTime, after it (positive = woke late)
-    var teleEnqToPresent = TeleSeries()    // fresh frames: decoder queue entry -> presentation time
-    var telePickToPresent = TeleSeries()   // end of the pick -> presentation time
-    // How far the compositor has to move the picture: the pose the frame was rendered for against the display's pose, and how old the frame's pose is.
-    var teleStale = TeleSeries()           // presentation time - the timestamp the frame was sent with (the vsync it was predicted for)
-    var teleReprojAngle = TeleSeries()     // degrees between the frame's head pose and the display's head pose (fresh frames)
-    var teleReprojPos = TeleSeries()       // millimetres between them
-    var teleReprojSpeed = TeleSeries()     // angle / staleness, degrees per second (the head speed the correction covers)
-    // r2: the same for repeated ticks (resubmit / reprojected: the old frame again, so its pose is older), and what the warp leaves out.
-    var teleStaleTickAge = TeleSeries(), teleStaleTickAngle = TeleSeries(), teleStaleTickPos = TeleSeries()
-    // The position gap in the frame's head space (x lateral, y vertical, z along the view), in mm: translation the warp drops (fresh frames).
-    var teleGapX = TeleSeries(), teleGapY = TeleSeries(), teleGapZ = TeleSeries()
-    // Parallax that dropped translation causes for an object at 1, 2 and 4 m (lateral + vertical gap only), degrees (fresh frames).
-    var teleParallax1 = TeleSeries(), teleParallax2 = TeleSeries(), teleParallax4 = TeleSeries()
-    // Context: how fast the head moved during the window (display pose to display pose), the floor correction's range, where the gaze converges.
-    var teleHeadLinSpeed = TeleSeries(), teleHeadAngSpeed = TeleSeries(), teleFloorY = TeleSeries(), teleVergence = TeleSeries()
-    var teleLastHeadPose: simd_float4x4? = nil
-    var teleLastHeadTime: Double = 0
-
-    /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
-    // Draw cost (read-only): CPU time from the end of the pick to `commit`, GPU time of the command buffer, and how long before (positive)
-    // or after (negative) the presentation time the GPU finished. The completion handler runs on another thread, hence the lock.
-    let teleDrawLock = NSLock()
-    var teleCpuSum = 0.0, teleCpuMax = 0.0, teleCpuN = 0
-    var teleGpuSum = 0.0, teleGpuMax = 0.0, teleGpuN = 0
-    var teleDoneSlackMin = Double.infinity, teleDoneLate = 0, teleDoneN = 0
-
-    // Where the render thread's CPU time goes (read-only, render thread only): command buffer + drawable, view declaration + tracking,
-    // device anchor query, encode + the rest up to `commit`. A frame over 4 ms keeps its split; the window's worst frame is printed.
-    var teleSegSum = [Double](repeating: 0, count: 4), teleSegMax = [Double](repeating: 0, count: 4)
-    var teleSegN = 0, teleSegOver4 = 0
-    var teleSegWorst = [Double](repeating: 0, count: 4), teleSegWorstTotal = 0.0
-
-    // view+tracking split in five: alvr_report_compositor_start, the code up to the lock (pipeline checks), the frameQueueLock take,
-    // logTelemetry + previous-pose conversion, and the rest up to the anchor query (sendTracking and friends).
-    var teleSubMax = [Double](repeating: 0, count: 5), teleSubWorst = [Double](repeating: 0, count: 5), teleSubWorstView = 0.0
-
-    // send_tracking in four: refetch query, walk-back query loop, anchor handling, hands/gaze/send. Max per window, the split of
-    // the window's slowest call, and how many loop queries that call needed.
-    var teleTrkMax = [Double](repeating: 0, count: 4), teleTrkWorst = [Double](repeating: 0, count: 4)
-    var teleTrkWorstTotal = 0.0, teleTrkWorstIters = 0, teleTrkMaxIters = 0, teleTrkRetries = 0, teleTrkN = 0
-
-    var teleTrkSkippedFrames = 0
-
-    func teleSegments(_ seg: [Double], sub: [Double], trk: [Double], trkIters: Int, skippedRefetch: Bool) {
-        if skippedRefetch { teleTrkSkippedFrames += 1 }
-        for i in 0..<4 { teleTrkMax[i] = max(teleTrkMax[i], trk[i]) }
-        let trkTotal = trk.reduce(0, +)
-        if trkTotal > teleTrkWorstTotal { teleTrkWorstTotal = trkTotal; teleTrkWorst = trk; teleTrkWorstIters = trkIters }
-        teleTrkMaxIters = max(teleTrkMaxIters, trkIters); if trkIters > 1 { teleTrkRetries += 1 }; teleTrkN += 1
-        for i in 0..<5 { teleSubMax[i] = max(teleSubMax[i], sub[i]) }
-        if seg[1] > teleSubWorstView { teleSubWorstView = seg[1]; teleSubWorst = sub }
-        let total = seg.reduce(0, +)
-        for i in 0..<4 { teleSegSum[i] += seg[i]; teleSegMax[i] = max(teleSegMax[i], seg[i]) }
-        teleSegN += 1
-        if total > 0.004 { teleSegOver4 += 1 }
-        if total > teleSegWorstTotal { teleSegWorstTotal = total; teleSegWorst = seg }
-    }
-
-    func teleSegmentsLine() -> String {
-        let n = Double(max(teleSegN, 1))
-        func ms(_ x: Double) -> Double { x * 1000 }
-        let line = String(format: "cpu split mean/max ms: drawable %.2f/%.2f, view+tracking %.2f/%.2f, anchor %.2f/%.2f, encode %.2f/%.2f; %d of %d frames over 4 ms; worst %.2f ms = drawable %.2f + view+tracking %.2f + anchor %.2f + encode %.2f",
-                          ms(teleSegSum[0] / n), ms(teleSegMax[0]), ms(teleSegSum[1] / n), ms(teleSegMax[1]), ms(teleSegSum[2] / n), ms(teleSegMax[2]), ms(teleSegSum[3] / n), ms(teleSegMax[3]),
-                          teleSegOver4, teleSegN, ms(teleSegWorstTotal), ms(teleSegWorst[0]), ms(teleSegWorst[1]), ms(teleSegWorst[2]), ms(teleSegWorst[3]))
-        let subLine = String(format: "; view+tracking parts max ms: report_start %.2f, pipeline %.2f, queue lock %.2f, log+pose %.2f, send_tracking %.2f; at the worst view+tracking %.2f ms: report_start %.2f, pipeline %.2f, queue lock %.2f, log+pose %.2f, send_tracking %.2f",
-                             ms(teleSubMax[0]), ms(teleSubMax[1]), ms(teleSubMax[2]), ms(teleSubMax[3]), ms(teleSubMax[4]), ms(teleSubWorstView),
-                             ms(teleSubWorst[0]), ms(teleSubWorst[1]), ms(teleSubWorst[2]), ms(teleSubWorst[3]), ms(teleSubWorst[4]))
-        teleSubMax = [Double](repeating: 0, count: 5); teleSubWorst = teleSubMax; teleSubWorstView = 0
-        teleSegSum = [0, 0, 0, 0]; teleSegMax = [0, 0, 0, 0]; teleSegN = 0; teleSegOver4 = 0; teleSegWorst = [0, 0, 0, 0]; teleSegWorstTotal = 0
-        let trkLine = String(format: "; send_tracking parts max ms: refetch %.2f, walk-back loop %.2f, anchor handling %.2f, hands+send %.2f; slowest call %.2f ms: refetch %.2f, loop %.2f (%d queries), anchor %.2f, hands+send %.2f; calls needing a retry %d of %d, most queries %d",
-                             ms(teleTrkMax[0]), ms(teleTrkMax[1]), ms(teleTrkMax[2]), ms(teleTrkMax[3]), ms(teleTrkWorstTotal),
-                             ms(teleTrkWorst[0]), ms(teleTrkWorst[1]), teleTrkWorstIters, ms(teleTrkWorst[2]), ms(teleTrkWorst[3]), teleTrkRetries, teleTrkN, teleTrkMaxIters)
-        let modeLine = String(format: "; refetch query skipped on %d of %d frames", teleTrkSkippedFrames, teleTrkN)
-        teleTrkSkippedFrames = 0
-        teleTrkMax = [Double](repeating: 0, count: 4); teleTrkWorst = teleTrkMax; teleTrkWorstTotal = 0; teleTrkWorstIters = 0; teleTrkMaxIters = 0; teleTrkRetries = 0; teleTrkN = 0
-        return line + subLine + trkLine + modeLine
-    }
-
-    func teleDrawCpu(_ seconds: Double) {
-        teleDrawLock.lock(); teleCpuSum += seconds; teleCpuMax = max(teleCpuMax, seconds); teleCpuN += 1; teleDrawLock.unlock()
-    }
-
-    func teleDrawDone(gpu: Double, slackToPresentation: Double) {
-        teleDrawLock.lock()
-        if gpu > 0 && gpu < 1 { teleGpuSum += gpu; teleGpuMax = max(teleGpuMax, gpu); teleGpuN += 1 }
-        teleDoneSlackMin = min(teleDoneSlackMin, slackToPresentation); teleDoneN += 1
-        if slackToPresentation < 0 { teleDoneLate += 1 }
-        teleDrawLock.unlock()
-    }
-
-    func teleDrawLine() -> String {
-        teleDrawLock.lock()
-        defer { teleDrawLock.unlock() }
-        let cpu = teleCpuN > 0 ? teleCpuSum / Double(teleCpuN) * 1000 : 0, gpu = teleGpuN > 0 ? teleGpuSum / Double(teleGpuN) * 1000 : 0
-        let line = String(format: "draw over %d frames: cpu mean %.2f ms max %.2f; gpu mean %.2f ms max %.2f (%d timed); gpu done %d late of %d (min slack to presentation %.2f ms)",
-                          teleCpuN, cpu, teleCpuMax * 1000, gpu, teleGpuMax * 1000, teleGpuN, teleDoneLate, teleDoneN, teleDoneSlackMin.isFinite ? teleDoneSlackMin * 1000 : 0)
-        teleCpuSum = 0; teleCpuMax = 0; teleCpuN = 0; teleGpuSum = 0; teleGpuMax = 0; teleGpuN = 0
-        teleDoneSlackMin = .infinity; teleDoneLate = 0; teleDoneN = 0
-        return line
-    }
-
-    func teleSubmitted(deadline: LayerRenderer.Clock.Instant) {
-        let slack = LayerRenderer.Clock().now.duration(to: deadline).timeInterval
-        teleMinSlack = min(teleMinSlack, slack)
-        if slack < 0 { teleMisses += 1 }
-    }
-
-    /// After the pick: which kind it was, the queue depth when it began, the wait, the age of a fresh frame.
-    func telePick(_ pick: EventHandler.DisplayPick, depth: Int, waited: Double) {
-        teleDepthSum += depth; teleDepthMax = max(teleDepthMax, depth); teleDepthTicks += 1
-        switch pick {
-        case .fresh(let f):
-            telePickFresh += 1
-            let age = CACurrentMediaTime() - f.enqueuedAt
-            teleAgeSum += age; teleAgeMax = max(teleAgeMax, age)
-            if waited > 0.0005 { teleFreshLate += 1; teleWaitSum += waited; teleWaitMax = max(teleWaitMax, waited) }
-        case .resubmit:
-            telePickResubmit += 1
-            if depth > 0 { teleFreshWithQueued += 1 }
-        case .reprojected: telePickReproj += 1; teleWaitSum += waited; teleWaitMax = max(teleWaitMax, waited)
-        case .none: telePickNone += 1
-        }
-    }
-
-    func teleLog(_ line: String) {
-        ("[tele] " + line).withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
-    }
-
-    /// Once at the first drawable (sizes, viewports, rate map), then every 10 s: the display interval seen between presentation times (mean / min /
-    /// max, so a switch between 90, 96 and 100 Hz shows), the thermal state, the decoder's refresh target. Called once per rendered frame with that frame's drawable.
-    func logTelemetry(drawable: LayerRenderer.Drawable, vsyncTime: Double) {
-        let now = CACurrentMediaTime()
-        if teleLastVsync > 0 {
-            let d = vsyncTime - teleLastVsync
-            if d > 0 && d < 0.1 {
-                teleCount += 1; teleSum += d; teleMin = min(teleMin, d); teleMax = max(teleMax, d)
-                if d > 0.015 { teleLate += 1 }
-            }
-        }
-        teleLastVsync = vsyncTime
-        if teleWindowStart == 0 { teleWindowStart = now }
-
-        let streaming = EventHandler.shared.alvrInitialized && EventHandler.shared.streamingActive
-        if !streaming { teleGeometryLogged = false }
-        if streaming && !teleGeometryLogged {
-            teleGeometryLogged = true
-            let tex = drawable.colorTextures.first
-            teleLog("build pose_telemetry r2 (pose query, client warp, timeline, head context)")
-            teleLog(String(format: "drawable color %ldx%ld layers %ld views %ld", tex?.width ?? 0, tex?.height ?? 0, tex?.arrayLength ?? 0, drawable.views.count))
-            for i in 0..<drawable.views.count {
-                let v = drawable.views[i].textureMap.viewport
-                teleLog(String(format: "view %d viewport %.0fx%.0f at %.0f,%.0f", i, v.width, v.height, v.originX, v.originY))
-            }
-            if let vrr = drawable.rasterizationRateMaps.first {
-                for layer in 0..<vrr.layerCount {
-                    let p = vrr.physicalSize(layer: layer)
-                    teleLog(String(format: "ratemap layer %d screen %.0fx%.0f physical %ldx%ld", layer, vrr.screenSize.width, vrr.screenSize.height, p.width, p.height))
-                }
-            } else {
-                teleLog("ratemap none")
-            }
-        }
-
-        let thermal = ProcessInfo.processInfo.thermalState.rawValue
-        let thermalChanged = thermal != teleLastThermal
-        if (now - teleWindowStart >= 10.0 && teleCount > 0) || thermalChanged {
-            let mean = teleCount > 0 ? teleSum / Double(teleCount) : 0
-            teleLog(String(format: "display interval mean %.3f ms (%.1f Hz) min %.3f max %.3f over %d frames, %d over 15 ms; deadline misses %d, min slack %.2f ms; thermal %d; stream target %.0f Hz",
-                           mean * 1000, mean > 0 ? 1.0 / mean : 0, teleMin.isFinite ? teleMin * 1000 : 0, teleMax * 1000, teleCount, teleLate, teleMisses, teleMinSlack.isFinite ? teleMinSlack * 1000 : 0, thermal, refreshRate))
-            objc_sync_enter(EventHandler.shared.frameQueueLock)
-            let dropsTotal = EventHandler.shared.queueOverflowDrops
-            objc_sync_exit(EventHandler.shared.frameQueueLock)
-            teleLog("queue overflow drops \(dropsTotal - teleDropsPrev) in the window (decoded frames discarded, the queue holds 2)")
-            teleDropsPrev = dropsTotal
-            teleLog(teleDrawLine())
-            teleLog(teleSegmentsLine())
-            let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
-            teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
-                           ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
-                           teleDepthTicks > 0 ? Double(teleDepthSum) / Double(teleDepthTicks) : 0, teleDepthMax,
-                           teleFreshLate, (teleFreshLate + telePickReproj) > 0 ? teleWaitSum / Double(teleFreshLate + telePickReproj) * 1000 : 0, teleWaitMax * 1000,
-                           telePickFresh > 0 ? teleAgeSum / Double(telePickFresh) * 1000 : 0, teleAgeMax * 1000))
-            teleLog("timeline (ms): Apple lead, optimal input -> presentation \(teleDesignLead.summary(scale: 1000)); rendering deadline -> presentation \(teleDeadlineLead.summary(scale: 1000)); our wake after optimal input \(teleWakeLate.summary(scale: 1000)); pick end -> presentation \(telePickToPresent.summary(scale: 1000)); fresh frame, decoder queue entry -> presentation \(teleEnqToPresent.summary(scale: 1000))")
-            teleLog("client warp (our shader, frame pose -> display pose) over \(teleReprojAngle.n) fresh frames: pose age (ms) \(teleStale.summary(scale: 1000, digits: 1)); angle (deg) \(teleReprojAngle.summary(digits: 3)); position gap, not corrected (mm) \(teleReprojPos.summary(digits: 1)); angle/age (deg/s) \(teleReprojSpeed.summary(digits: 1))")
-            teleLog("client warp on repeated ticks over \(teleStaleTickAge.n): pose age (ms) \(teleStaleTickAge.summary(scale: 1000, digits: 1)); angle (deg) \(teleStaleTickAngle.summary(digits: 3)); position gap (mm) \(teleStaleTickPos.summary(digits: 1))")
-            teleLog("dropped translation, fresh frames, in the frame's head space (mm, absolute): lateral \(teleGapX.summary(digits: 1)); vertical \(teleGapY.summary(digits: 1)); depth \(teleGapZ.summary(digits: 1)); parallax if the object is at 1 m (deg) \(teleParallax1.summary(digits: 3)); 2 m \(teleParallax2.summary(digits: 3)); 4 m \(teleParallax4.summary(digits: 3))")
-            teleLog("head context: linear speed (m/s) \(teleHeadLinSpeed.summary(digits: 3)); angular speed (deg/s) \(teleHeadAngSpeed.summary(digits: 1)); floor correction y (mm) min \(teleFloorY.v.min().map { String(format: "%.1f", $0 * 1000) } ?? "n/a") max \(teleFloorY.v.max().map { String(format: "%.1f", $0 * 1000) } ?? "n/a"); vergence depth estimate (m, unreliable) \(teleVergence.summary(digits: 2))")
-            for line in WorldTracker.shared.telePoseLines() { teleLog(line) }
-            teleDesignLead.reset(); teleDeadlineLead.reset(); teleWakeLate.reset(); teleEnqToPresent.reset(); telePickToPresent.reset()
-            teleStale.reset(); teleReprojAngle.reset(); teleReprojPos.reset(); teleReprojSpeed.reset()
-            teleStaleTickAge.reset(); teleStaleTickAngle.reset(); teleStaleTickPos.reset()
-            teleGapX.reset(); teleGapY.reset(); teleGapZ.reset(); teleParallax1.reset(); teleParallax2.reset(); teleParallax4.reset()
-            teleHeadLinSpeed.reset(); teleHeadAngSpeed.reset(); teleFloorY.reset(); teleVergence.reset()
-            telePickFresh = 0; telePickResubmit = 0; telePickReproj = 0; telePickNone = 0; teleDepthSum = 0; teleDepthMax = 0; teleDepthTicks = 0
-            teleFreshLate = 0; teleWaitSum = 0; teleWaitMax = 0; teleAgeSum = 0; teleAgeMax = 0; teleFreshWithQueued = 0
-            if teleLastWindowMean > 0 && mean > 0 && abs(mean - teleLastWindowMean) / teleLastWindowMean > 0.03 {
-                teleLog(String(format: "DISPLAY RATE CHANGED %.1f Hz -> %.1f Hz", 1.0 / teleLastWindowMean, 1.0 / mean))
-            }
-            if mean > 0 { teleLastWindowMean = mean }
-            teleLastThermal = thermal
-            teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0; teleLate = 0; teleMisses = 0; teleMinSlack = .infinity
-        }
-    }
-
     // Checks if eye tracking was secretly added, maybe, hard to know really.
     func checkEyes(drawable: LayerRenderer.Drawable) {
         print("begin -----")
@@ -940,15 +708,9 @@ class Renderer {
         roundTripRenderTime = CACurrentMediaTime() - lastRoundTripRenderTimestamp
         lastRoundTripRenderTimestamp = CACurrentMediaTime()
 
-        // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread
-        let telePickStart = CACurrentMediaTime()
-        let telePickDepth = EventHandler.shared.queueDepth()
-        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.008)
-        let telePickEnd = CACurrentMediaTime()
-        let teleOptimalInput = LayerRenderer.Clock.Instant.epoch.duration(to: timing.optimalInputTime).timeInterval
-        if streamingActiveForFrame { teleWakeLate.add(telePickStart - teleOptimalInput) }
-        if streamingActiveForFrame { telePick(telePicked, depth: telePickDepth, waited: telePickEnd - telePickStart) }
-        switch telePicked {
+        // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread. The wait for a late
+        // frame is 8 ms (stock 5): measured on the headset 2026-11-10, +1.1 points of new frames and fewer reprojected ticks.
+        switch EventHandler.shared.pollFrameForDisplay(timeout: 0.008) {
         case .resubmit(let f):
             queuedFrame = f
             EventHandler.shared.framesRendered -= 1
@@ -1009,7 +771,6 @@ class Renderer {
         var drawables: [LayerRenderer.Drawable] = [_drawable]
 #endif
         
-        let telePhase1 = CACurrentMediaTime()
         let nalViewsPtr = UnsafeMutablePointer<AlvrViewParams>.allocate(capacity: 2)
         defer { nalViewsPtr.deallocate() }
         
@@ -1017,7 +778,6 @@ class Renderer {
             alvr_report_compositor_start(queuedFrame!.timestamp, nalViewsPtr)
             queuedFrame = QueuedFrame(imageBuffer: queuedFrame!.imageBuffer, timestamp: queuedFrame!.timestamp, viewParamsValid: true, viewParams: [nalViewsPtr[0], nalViewsPtr[1]])
         }
-        let teleSubA = CACurrentMediaTime()
 
         if EventHandler.shared.alvrInitialized && streamingActiveForFrame {
             let settings = ALVRClientApp.gStore.settings
@@ -1117,11 +877,9 @@ class Renderer {
         
         //checkEyes(drawable: mainDrawable)
         
-        let teleSubB = CACurrentMediaTime()
         objc_sync_enter(EventHandler.shared.frameQueueLock)
         EventHandler.shared.framesSinceLastDecode += 1
         objc_sync_exit(EventHandler.shared.frameQueueLock)
-        let teleSubC = CACurrentMediaTime()
         
         if queuedFrame != nil && !queuedFrame!.viewParamsValid {
             print("aaaaaaaa bad view params")
@@ -1129,16 +887,7 @@ class Renderer {
         
         let vsyncTime = LayerRenderer.Clock.Instant.epoch.duration(to: mainDrawable.frameTiming.presentationTime).timeInterval
         let vsyncTimeNs = UInt64(vsyncTime * Double(NSEC_PER_SEC))
-        logTelemetry(drawable: mainDrawable, vsyncTime: vsyncTime)
-        if streamingActiveForFrame {
-            let ft = mainDrawable.frameTiming
-            teleDesignLead.add(vsyncTime - LayerRenderer.Clock.Instant.epoch.duration(to: ft.optimalInputTime).timeInterval)
-            teleDeadlineLead.add(vsyncTime - LayerRenderer.Clock.Instant.epoch.duration(to: ft.renderingDeadline).timeInterval)
-            telePickToPresent.add(vsyncTime - telePickEnd)
-            if case .fresh = telePicked, let q = queuedFrame { teleEnqToPresent.add(vsyncTime - q.enqueuedAt) }
-        }
         let framePreviouslyPredictedPose = queuedFrame != nil ? WorldTracker.shared.convertSteamVRViewPose(queuedFrame!.viewParams) : nil
-        let teleSubD = CACurrentMediaTime()
         
         // Do NOT move this, just in case, because DeviceAnchor is wonkey and every DeviceAnchor mutates each other.
         if EventHandler.shared.alvrInitialized && EventHandler.shared.lastIpd != -1 {
@@ -1178,60 +927,9 @@ class Renderer {
 #endif
         }
         
-        let telePhase2 = CACurrentMediaTime()
         let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
-        let telePhase3 = CACurrentMediaTime()
-        // pose_telemetry: how far our own warp moves the frame (its head pose against the display's), the age of that pose, what the warp drops
-        // (translation), and how the head moved. Fresh frames and repeated ticks are kept apart.
-        if streamingActiveForFrame, let da = deviceAnchor {
-            let dm = da.originFromAnchorTransform
-            if let last = teleLastHeadPose, vsyncTime - teleLastHeadTime > 0 && vsyncTime - teleLastHeadTime < 0.05 {
-                let dt = vsyncTime - teleLastHeadTime
-                let ql = simd_quaternion(last), qn = simd_quaternion(dm)
-                teleHeadAngSpeed.add(2.0 * acos(min(1.0, Double(abs(simd_dot(ql, qn))))) * 180.0 / Double.pi / dt)
-                let dp = dm.columns.3 - last.columns.3
-                teleHeadLinSpeed.add(Double(simd_length(simd_float3(dp.x, dp.y, dp.z))) / dt)
-            }
-            teleLastHeadPose = dm; teleLastHeadTime = vsyncTime
-            teleFloorY.add(Double(WorldTracker.shared.floorCorrectionTransform.y))
-            let vg = Double(WorldTracker.shared.currentVergenceDepth)
-            if vg.isFinite && vg > 0 && vg < 100 { teleVergence.add(vg) }
-
-            var fresh = false
-            var haveFrame = false
-            switch telePicked {
-            case .fresh: fresh = true; haveFrame = true
-            case .resubmit, .reprojected: haveFrame = true
-            case .none: break
-            }
-            if haveFrame, let q = queuedFrame, q.viewParamsValid, let fp = framePreviouslyPredictedPose {
-                let age = vsyncTime - Double(q.timestamp) / Double(NSEC_PER_SEC)
-                if age > 0 && age < 0.5 {
-                    let qa = simd_quaternion(fp), qb = simd_quaternion(dm)
-                    let angle = 2.0 * acos(min(1.0, Double(abs(simd_dot(qa, qb))))) * 180.0 / Double.pi
-                    let gapWorld = simd_float3(dm.columns.3.x - fp.columns.3.x, dm.columns.3.y - fp.columns.3.y, dm.columns.3.z - fp.columns.3.z)
-                    let pos = Double(simd_length(gapWorld)) * 1000.0
-                    if fresh {
-                        teleStale.add(age); teleReprojAngle.add(angle); teleReprojPos.add(pos); teleReprojSpeed.add(angle / age)
-                        let g = qa.inverse.act(gapWorld)   // in the frame's head space
-                        teleGapX.add(Double(abs(g.x)) * 1000.0); teleGapY.add(Double(abs(g.y)) * 1000.0); teleGapZ.add(Double(abs(g.z)) * 1000.0)
-                        let lateral = Double(hypot(g.x, g.y))
-                        for (series, d) in [(0, 1.0), (1, 2.0), (2, 4.0)] {
-                            let deg = atan(lateral / d) * 180.0 / Double.pi
-                            if series == 0 { teleParallax1.add(deg) } else if series == 1 { teleParallax2.add(deg) } else { teleParallax4.add(deg) }
-                        }
-                    } else {
-                        teleStaleTickAge.add(age); teleStaleTickAngle.add(angle); teleStaleTickPos.add(pos)
-                    }
-                }
-            }
-        }
         
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
-            if EventHandler.shared.streamingActive {
-                let nowS = CACurrentMediaTime()
-                self.teleDrawDone(gpu: commandBuffer.gpuEndTime - commandBuffer.gpuStartTime, slackToPresentation: Double(vsyncTimeNs) / Double(NSEC_PER_SEC) - nowS)
-            }
             if EventHandler.shared.alvrInitialized, let submitted = queuedFrame, EventHandler.shared.markSubmitted(submitted.timestamp) {
                 let currentTimeNs = UInt64(CACurrentMediaTime() * Double(NSEC_PER_SEC))
                 
@@ -1358,16 +1056,8 @@ class Renderer {
             fadeInOverlayAlpha = 0.0
         }
         
-        if streamingActiveForFrame {
-            let teleCommit = CACurrentMediaTime()
-            teleDrawCpu(teleCommit - telePickEnd)
-            teleSegments([telePhase1 - telePickEnd, telePhase2 - telePhase1, telePhase3 - telePhase2, teleCommit - telePhase3],
-                         sub: [teleSubA - telePhase1, teleSubB - teleSubA, teleSubC - teleSubB, teleSubD - teleSubC, telePhase2 - teleSubD],
-                         trk: WorldTracker.shared.teleTrkLast, trkIters: WorldTracker.shared.teleTrkIters, skippedRefetch: WorldTracker.shared.teleTrkSkipped)
-        }
         commandBuffer.commit()
         frame.endSubmission()
-        teleSubmitted(deadline: timing.renderingDeadline)
         
         EventHandler.shared.publishShownFrame(queuedFrame)
         EventHandler.shared.lastQueuedFramePose = framePreviouslyPredictedPose

@@ -143,7 +143,6 @@ class EventHandler: ObservableObject {
     /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
     static var catchUpPick = false
     var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
-    var queueOverflowDrops = 0   // telemetry: decoded frames discarded because the queue already held 2 (read under frameQueueLock)
     var frameQueueLastImageBuffer: CVImageBuffer? = nil
     var lastQueuedFrame: QueuedFrame? = nil
     var lastQueuedFramePose: simd_float4x4? = nil
@@ -195,11 +194,11 @@ class EventHandler: ObservableObject {
     /// 1.2 is the value AVP users report as the best (1.5 up to 1.3.5); the PC side keeps its own display gamma on top, independent of this one.
     static let preferredEncodingGamma: Float = 1.2
     var encodingGamma: Float = 1.0
-    /// The rate the streamer negotiated for this stream (`refresh_rate_hint` of the StreamingStarted event). The display rate follows it
-    /// unless the app's Stream FPS setting names a number. nil before the first stream.
+    /// The rate the streamer negotiated for this stream (`refresh_rate_hint` of the StreamingStarted event). Becomes `refreshRate` unless the
+    /// app's Stream FPS setting names a number (VideoHandler.applyRefreshRate then asks the display for 100 Hz when this is 90). nil before the first stream.
     var negotiatedRefreshRate: Float? = nil
 
-    /// The rate the client asks the display for: a number in the Stream FPS setting wins, then the negotiated rate, then the device default.
+    /// The client's stream rate: a number in the Stream FPS setting wins, then the negotiated rate, then the device default.
     static func effectiveRefreshRate(setting: String, negotiated: Float?, deviceDefault: Float) -> Float {
         if let n = Float(setting), n > 0 { return n }
         if let r = negotiated, r >= 24, r <= 240 { return r }
@@ -476,13 +475,6 @@ class EventHandler: ObservableObject {
     /// Render thread: waits up to `timeout` for a decoded frame. Everything it reads (queue, last shown frame, last
     /// submitted timestamp) is written by other threads (decoder output, command-buffer completion, stream stop), so
     /// every read happens under frameQueueLock and the last shown frame is read once.
-    /// Telemetry only: frames waiting in the queue right now.
-    func queueDepth() -> Int {
-        objc_sync_enter(frameQueueLock)
-        defer { objc_sync_exit(frameQueueLock) }
-        return frameQueue.count
-    }
-
     func pollFrameForDisplay(timeout: Double) -> DisplayPick {
         let startPollTime = CACurrentMediaTime()
         while true {
@@ -754,7 +746,6 @@ class EventHandler: ObservableObject {
                     // TODO: make this configurable
                     if frameQueue.count > 2 {
                         frameQueue.removeFirst()
-                        queueOverflowDrops += 1
                     }
 
 
@@ -1180,5 +1171,4 @@ struct QueuedFrame {
     let timestamp: UInt64
     let viewParamsValid: Bool
     let viewParams: [AlvrViewParams]
-    var enqueuedAt: Double = CACurrentMediaTime()   // telemetry only: when the decoded frame entered the queue
 }

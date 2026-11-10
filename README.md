@@ -98,6 +98,17 @@ Picture quality: two changes in the shader and the texture path, no setting for 
   colour inside the sample where the shader cannot reach. The colour was checked on a Vision Pro by the owner (the first
   build with the filters: colours and sharpness good). `forceFastSecretTextureFormats` in `VideoHandler.swift` goes back to the old formats
   with one constant, filters and all.
+
+Pacing (field-measured on an M2 Vision Pro, 2026-11-10; the numbers are in the performance plan):
+
+- **The pick waits 8 ms for a late frame** (stock 5 ms): +1.1 points of new frames per tick, repeated ticks down by 29%, about 0.5 ms
+  more queue age, a deadline-miss count that stays about 1 per 1000. `Renderer.swift`, the `pollFrameForDisplay` call.
+- **100 Hz hack.** When the streamer asks for 90 Hz the client asks visionOS for 100 Hz (`VideoHandler.applyRefreshRate`), on every
+  Vision Pro including the M5 so there is one rule. It is a request visionOS may refuse. The reason: the 100 Hz mode missed about 3 frames
+  per 1000, a real 90 Hz stay about 23, and the headset ran 100 Hz in the sessions measured even when 90 was asked. The stream rate stays
+  the negotiated one. If a later visionOS makes 90 Hz fine, delete the two lines of `displayRequest`.
+- The 1.3.8 telemetry (the `[tele]` lines in the streamer log) is removed; the catch-up pick stays as a lab switch (`EventHandler.catchUpPick`, off)
+  because the protocol harness drives it.
 - **Cost, measured on the device** (lines `[tele] draw over ...` in the streamer's `alvr.log`): the GPU draw takes about
   4.0 ms per frame at 100 Hz (2.2 ms with the hardware formats and no filters, on a different, larger stream, so the two
   numbers are not a clean comparison; the filter's share is at most the difference and is largest on a small stream). In
