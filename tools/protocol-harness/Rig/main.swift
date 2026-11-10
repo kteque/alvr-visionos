@@ -78,6 +78,16 @@ func writeReport() {
         var run = 0, worst = 0, gaps = 0
         for t in w { if t.shown == .new { if run >= 1 { gaps += 1 }; run = 0 } else { run += 1; worst = max(worst, run) } }
         m["win_new_gaps_per_1000"] = Double(gaps) / wn * 1000; m["win_worst_run_ticks"] = Double(worst)
+        // new frames per display vsync: the compositor's updates in the window (presentation-time span over the median interval) that showed a new frame;
+        // a missed deadline skips vsyncs, which the share of rendered ticks does not see
+        let gapsMs = (1..<w.count).map { w[$0].vsync - w[$0 - 1].vsync }.sorted()
+        if !gapsMs.isEmpty {
+            let period = gapsMs[gapsMs.count / 2]
+            let vsyncs = ((w.last!.vsync - w.first!.vsync) / period).rounded() + 1
+            m["win_vsyncs"] = vsyncs
+            m["win_new_per_vsync"] = m["win_new"]! / vsyncs
+            m["win_skipped_vsync_per_1000"] = (vsyncs - wn) / vsyncs * 1000
+        }
         // frame age at display: the tick's presentation time minus the presentation time the frame's pose was predicted for (client clock only)
         let ages = w.filter { $0.shown == .new && $0.frameTs > 0 }.map { ($0.vsync - Double($0.frameTs) / 1e9) * 1000 }.sorted()
         if !ages.isEmpty {
