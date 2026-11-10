@@ -684,6 +684,16 @@ class Renderer {
     var teleReprojAngle = TeleSeries()     // degrees between the frame's head pose and the display's head pose (fresh frames)
     var teleReprojPos = TeleSeries()       // millimetres between them
     var teleReprojSpeed = TeleSeries()     // angle / staleness, degrees per second (the head speed the correction covers)
+    // r2: the same for repeated ticks (resubmit / reprojected: the old frame again, so its pose is older), and what the warp leaves out.
+    var teleStaleTickAge = TeleSeries(), teleStaleTickAngle = TeleSeries(), teleStaleTickPos = TeleSeries()
+    // The position gap in the frame's head space (x lateral, y vertical, z along the view), in mm: translation the warp drops (fresh frames).
+    var teleGapX = TeleSeries(), teleGapY = TeleSeries(), teleGapZ = TeleSeries()
+    // Parallax that dropped translation causes for an object at 1, 2 and 4 m (lateral + vertical gap only), degrees (fresh frames).
+    var teleParallax1 = TeleSeries(), teleParallax2 = TeleSeries(), teleParallax4 = TeleSeries()
+    // Context: how fast the head moved during the window (display pose to display pose), the floor correction's range, where the gaze converges.
+    var teleHeadLinSpeed = TeleSeries(), teleHeadAngSpeed = TeleSeries(), teleFloorY = TeleSeries(), teleVergence = TeleSeries()
+    var teleLastHeadPose: simd_float4x4? = nil
+    var teleLastHeadTime: Double = 0
 
     /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
     // Draw cost (read-only): CPU time from the end of the pick to `commit`, GPU time of the command buffer, and how long before (positive)
@@ -814,6 +824,7 @@ class Renderer {
         if streaming && !teleGeometryLogged {
             teleGeometryLogged = true
             let tex = drawable.colorTextures.first
+            teleLog("build pose_telemetry r2 (pose query, client warp, timeline, head context)")
             teleLog(String(format: "drawable color %ldx%ld layers %ld views %ld", tex?.width ?? 0, tex?.height ?? 0, tex?.arrayLength ?? 0, drawable.views.count))
             for i in 0..<drawable.views.count {
                 let v = drawable.views[i].textureMap.viewport
@@ -849,10 +860,16 @@ class Renderer {
                            teleFreshLate, (teleFreshLate + telePickReproj) > 0 ? teleWaitSum / Double(teleFreshLate + telePickReproj) * 1000 : 0, teleWaitMax * 1000,
                            telePickFresh > 0 ? teleAgeSum / Double(telePickFresh) * 1000 : 0, teleAgeMax * 1000))
             teleLog("timeline (ms): Apple lead, optimal input -> presentation \(teleDesignLead.summary(scale: 1000)); rendering deadline -> presentation \(teleDeadlineLead.summary(scale: 1000)); our wake after optimal input \(teleWakeLate.summary(scale: 1000)); pick end -> presentation \(telePickToPresent.summary(scale: 1000)); fresh frame, decoder queue entry -> presentation \(teleEnqToPresent.summary(scale: 1000))")
-            teleLog("compositor correction over \(teleReprojAngle.n) fresh frames: frame pose age (ms) \(teleStale.summary(scale: 1000, digits: 1)); angle (deg) \(teleReprojAngle.summary(digits: 3)); position (mm) \(teleReprojPos.summary(digits: 1)); angle/age (deg/s) \(teleReprojSpeed.summary(digits: 1))")
+            teleLog("client warp (our shader, frame pose -> display pose) over \(teleReprojAngle.n) fresh frames: pose age (ms) \(teleStale.summary(scale: 1000, digits: 1)); angle (deg) \(teleReprojAngle.summary(digits: 3)); position gap, not corrected (mm) \(teleReprojPos.summary(digits: 1)); angle/age (deg/s) \(teleReprojSpeed.summary(digits: 1))")
+            teleLog("client warp on repeated ticks over \(teleStaleTickAge.n): pose age (ms) \(teleStaleTickAge.summary(scale: 1000, digits: 1)); angle (deg) \(teleStaleTickAngle.summary(digits: 3)); position gap (mm) \(teleStaleTickPos.summary(digits: 1))")
+            teleLog("dropped translation, fresh frames, in the frame's head space (mm, absolute): lateral \(teleGapX.summary(digits: 1)); vertical \(teleGapY.summary(digits: 1)); depth \(teleGapZ.summary(digits: 1)); parallax if the object is at 1 m (deg) \(teleParallax1.summary(digits: 3)); 2 m \(teleParallax2.summary(digits: 3)); 4 m \(teleParallax4.summary(digits: 3))")
+            teleLog("head context: linear speed (m/s) \(teleHeadLinSpeed.summary(digits: 3)); angular speed (deg/s) \(teleHeadAngSpeed.summary(digits: 1)); floor correction y (mm) min \(teleFloorY.v.min().map { String(format: "%.1f", $0 * 1000) } ?? "n/a") max \(teleFloorY.v.max().map { String(format: "%.1f", $0 * 1000) } ?? "n/a"); vergence depth estimate (m, unreliable) \(teleVergence.summary(digits: 2))")
             for line in WorldTracker.shared.telePoseLines() { teleLog(line) }
             teleDesignLead.reset(); teleDeadlineLead.reset(); teleWakeLate.reset(); teleEnqToPresent.reset(); telePickToPresent.reset()
             teleStale.reset(); teleReprojAngle.reset(); teleReprojPos.reset(); teleReprojSpeed.reset()
+            teleStaleTickAge.reset(); teleStaleTickAngle.reset(); teleStaleTickPos.reset()
+            teleGapX.reset(); teleGapY.reset(); teleGapZ.reset(); teleParallax1.reset(); teleParallax2.reset(); teleParallax4.reset()
+            teleHeadLinSpeed.reset(); teleHeadAngSpeed.reset(); teleFloorY.reset(); teleVergence.reset()
             telePickFresh = 0; telePickResubmit = 0; telePickReproj = 0; telePickNone = 0; teleDepthSum = 0; teleDepthMax = 0; teleDepthTicks = 0
             teleFreshLate = 0; teleWaitSum = 0; teleWaitMax = 0; teleAgeSum = 0; teleAgeMax = 0; teleFreshWithQueued = 0
             if teleLastWindowMean > 0 && mean > 0 && abs(mean - teleLastWindowMean) / teleLastWindowMean > 0.03 {
@@ -1164,15 +1181,49 @@ class Renderer {
         let telePhase2 = CACurrentMediaTime()
         let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
         let telePhase3 = CACurrentMediaTime()
-        // pose_telemetry: how far the compositor has to move this fresh frame (its head pose against the display's), and the age of that pose
-        if streamingActiveForFrame, case .fresh = telePicked, let q = queuedFrame, q.viewParamsValid, let fp = framePreviouslyPredictedPose, let da = deviceAnchor {
-            let age = vsyncTime - Double(q.timestamp) / Double(NSEC_PER_SEC)
-            if age > 0 && age < 0.5 {
-                let qa = simd_quaternion(fp), qb = simd_quaternion(da.originFromAnchorTransform)
-                let angle = 2.0 * acos(min(1.0, Double(abs(simd_dot(qa, qb))))) * 180.0 / Double.pi
-                let pa = fp.columns.3, pb = da.originFromAnchorTransform.columns.3
-                let pos = Double(simd_length(simd_float3(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z))) * 1000.0
-                teleStale.add(age); teleReprojAngle.add(angle); teleReprojPos.add(pos); teleReprojSpeed.add(angle / age)
+        // pose_telemetry: how far our own warp moves the frame (its head pose against the display's), the age of that pose, what the warp drops
+        // (translation), and how the head moved. Fresh frames and repeated ticks are kept apart.
+        if streamingActiveForFrame, let da = deviceAnchor {
+            let dm = da.originFromAnchorTransform
+            if let last = teleLastHeadPose, vsyncTime - teleLastHeadTime > 0 && vsyncTime - teleLastHeadTime < 0.05 {
+                let dt = vsyncTime - teleLastHeadTime
+                let ql = simd_quaternion(last), qn = simd_quaternion(dm)
+                teleHeadAngSpeed.add(2.0 * acos(min(1.0, Double(abs(simd_dot(ql, qn))))) * 180.0 / Double.pi / dt)
+                let dp = dm.columns.3 - last.columns.3
+                teleHeadLinSpeed.add(Double(simd_length(simd_float3(dp.x, dp.y, dp.z))) / dt)
+            }
+            teleLastHeadPose = dm; teleLastHeadTime = vsyncTime
+            teleFloorY.add(Double(WorldTracker.shared.floorCorrectionTransform.y))
+            let vg = Double(WorldTracker.shared.currentVergenceDepth)
+            if vg.isFinite && vg > 0 && vg < 100 { teleVergence.add(vg) }
+
+            var fresh = false
+            var haveFrame = false
+            switch telePicked {
+            case .fresh: fresh = true; haveFrame = true
+            case .resubmit, .reprojected: haveFrame = true
+            case .none: break
+            }
+            if haveFrame, let q = queuedFrame, q.viewParamsValid, let fp = framePreviouslyPredictedPose {
+                let age = vsyncTime - Double(q.timestamp) / Double(NSEC_PER_SEC)
+                if age > 0 && age < 0.5 {
+                    let qa = simd_quaternion(fp), qb = simd_quaternion(dm)
+                    let angle = 2.0 * acos(min(1.0, Double(abs(simd_dot(qa, qb))))) * 180.0 / Double.pi
+                    let gapWorld = simd_float3(dm.columns.3.x - fp.columns.3.x, dm.columns.3.y - fp.columns.3.y, dm.columns.3.z - fp.columns.3.z)
+                    let pos = Double(simd_length(gapWorld)) * 1000.0
+                    if fresh {
+                        teleStale.add(age); teleReprojAngle.add(angle); teleReprojPos.add(pos); teleReprojSpeed.add(angle / age)
+                        let g = qa.inverse.act(gapWorld)   // in the frame's head space
+                        teleGapX.add(Double(abs(g.x)) * 1000.0); teleGapY.add(Double(abs(g.y)) * 1000.0); teleGapZ.add(Double(abs(g.z)) * 1000.0)
+                        let lateral = Double(hypot(g.x, g.y))
+                        for (series, d) in [(0, 1.0), (1, 2.0), (2, 4.0)] {
+                            let deg = atan(lateral / d) * 180.0 / Double.pi
+                            if series == 0 { teleParallax1.add(deg) } else if series == 1 { teleParallax2.add(deg) } else { teleParallax4.add(deg) }
+                        }
+                    } else {
+                        teleStaleTickAge.add(age); teleStaleTickAngle.add(angle); teleStaleTickPos.add(pos)
+                    }
+                }
             }
         }
         
