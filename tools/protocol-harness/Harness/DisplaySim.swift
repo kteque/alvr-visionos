@@ -17,7 +17,14 @@ final class DisplaySim: @unchecked Sendable {
 
     // what the wearer saw, one entry per display tick
     enum Shown { case blank, new, repeated }
-    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double? }
+    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double?
+        // the compositor's presentation time of this tick (the rig reads display intervals from it) and whether the frame missed its deadline
+        var vsync: Double = 0; var missed = false }
+    /// Rig: extra CPU cost (ms) of a frame, called once per frame on the render thread (the field's tracking-query spikes and stalls). nil = none.
+    nonisolated(unsafe) var extraCostMs: (() -> Double)? = nil
+    /// Rig: a frame that ends after its own presentation time misses the compositor's deadline: that tick shows the previous picture and the next
+    /// presentation time skips ahead (a doubled interval, as the field's `display interval` lines show). false = the protocol harness's old rule.
+    nonisolated(unsafe) var strictDeadline = false
     let lock = NSLock()
     var ticks: [Tick] = []
     // when the host sent each frame (frame age at the display tick = tick time - this)
@@ -63,6 +70,17 @@ final class DisplaySim: @unchecked Sendable {
             let now = CACurrentMediaTime()
             if optimalInput > now { usleep(UInt32((optimalInput - now) * 1e6)) }
             renderFrame(presentation: nextVsync)
+            if strictDeadline {
+                let cur = nextVsync
+                let now2 = CACurrentMediaTime()
+                if now2 > cur {
+                    let k = ((now2 - cur) / period).rounded(.up)
+                    nextVsync = cur + (k + 1) * period
+                    lock.lock(); if !ticks.isEmpty { ticks[ticks.count - 1].missed = true }; lock.unlock()
+                    HarnessStats.shared.count("missed_deadline")
+                } else { nextVsync = cur + period }
+                continue
+            }
             nextVsync += period
             let late = CACurrentMediaTime() - nextVsync
             if late > 0 { // a missed frame: the compositor moves on to the next vsync
@@ -165,11 +183,11 @@ final class DisplaySim: @unchecked Sendable {
         let nowT = HarnessLog.shared.now()
         var ageMs: Double? = nil
         if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
-        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs))
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, vsync: vsyncTime))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)
-        usleep(1000)
+        usleep(UInt32((1.0 + (extraCostMs?() ?? 0)) * 1000))
 
         // Renderer.swift:1044-1045
         eh.publishShownFrame(queuedFrame)

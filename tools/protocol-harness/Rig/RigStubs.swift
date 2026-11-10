@@ -264,3 +264,39 @@ final class RigFrames: @unchecked Sendable {
     /// frames at or above this size are game content (idle frames are a few hundred bytes)
     static let contentBytes = 8000
 }
+
+/// Render-thread cost model fitted to the field's `display interval` windows (docs/VISIONOS_TELEMETRY_LEARNINGS.md): the display stays on its rate; what
+/// happens is deadline misses. Baseline ~2.2 per 1000 frames (a tracking query blocks 4.4 ms and up to 14 ms: window maxima of `send_tracking`), and
+/// storms: an optional long stall, then a miss rate peak*exp(-t/tau) over the baseline (21:16 on 2026-11-09: stall 80 ms, 78 misses in 10 s;
+/// 00:17 on 2026-11-10: 33, 21, 7, 10, 13 misses in the next five windows). A "spike" is always over the frame's slack (the model draws only misses).
+final class RigMisses: @unchecked Sendable {
+    static let shared = RigMisses()
+    nonisolated(unsafe) static var baseRate = 0.0022
+    nonisolated(unsafe) static var storms: [(t0: Double, peak: Double, tauS: Double, stallMs: Double)] = []
+    private let lock = NSLock()
+    private var rng = RigRng(state: 0xA5A5F00DCAFEBABE ^ RigNet.seed)
+    private var t0: Double? = nil
+    private var stormsDone = 0
+    private var frames = 0
+    /// extra cost in ms for the frame being rendered now
+    func extraCostMs() -> Double {
+        let now = CACurrentMediaTime()
+        lock.lock(); defer { lock.unlock() }
+        if t0 == nil { t0 = now }
+        let el = now - t0!
+        frames += 1
+        var cost = 0.0
+        while stormsDone < RigMisses.storms.count && el >= RigMisses.storms[stormsDone].t0 {
+            let s = RigMisses.storms[stormsDone]; stormsDone += 1
+            if s.stallMs > 0 { cost = max(cost, s.stallMs) }
+            HarnessLog.shared.event("miss_storm", ["at_s": String(format: "%.1f", el), "peak": "\(s.peak)", "tau_s": "\(s.tauS)", "stall_ms": "\(s.stallMs)"])
+        }
+        var rate = RigMisses.baseRate
+        for i in 0..<stormsDone {
+            let s = RigMisses.storms[i]
+            rate += s.peak * exp(-max(0, el - s.t0) / s.tauS)
+        }
+        if rng.unit() < rate { cost = max(cost, min(14.4, 4.4 + (-log(max(rng.unit(), 1e-12))) * 2.5)) }
+        return cost
+    }
+}

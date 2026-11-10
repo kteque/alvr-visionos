@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -34,6 +34,12 @@ if let v = argValue("--gpu-ms").flatMap(Double.init) { DisplaySim.shared.gpuMs =
 if let v = argValue("--width").flatMap(Int.init) { RigConfig.width = v }
 if let v = argValue("--height").flatMap(Int.init) { RigConfig.height = v }
 DisplaySim.shared.displayHz = Double(argValue("--display-hz") ?? "") ?? 100
+// field model: the display keeps its rate, the render thread misses deadlines (baseline + storms); --strict-deadline 0 keeps the harness's old rule
+DisplaySim.shared.strictDeadline = (argValue("--strict-deadline") ?? "1") != "0"
+if let v = argValue("--miss-rate").flatMap(Double.init) { RigMisses.baseRate = v }
+for st in argValues("--storm") { let p = st.split(separator: ":").map { Double($0) ?? 0 }; if p.count >= 3 { RigMisses.storms.append((p[0], p[1], p[2], p.count > 3 ? p[3] : 0)) } }
+RigMisses.storms.sort { $0.t0 < $1.t0 }
+DisplaySim.shared.extraCostMs = { RigMisses.shared.extraCostMs() }
 
 func writeReport() {
     let ds = DisplaySim.shared
@@ -43,6 +49,20 @@ func writeReport() {
     // the window where game content was on screen: from the first to the last tick that showed a content-sized frame
     let content = ticks.enumerated().filter { RigFrames.shared.size($0.element.frameIndex ?? 0) >= RigFrames.contentBytes }.map { $0.offset }
     try? csv.write(toFile: "\(outDir)/ticks.csv", atomically: true, encoding: .utf8)
+    // per-10 s windows in the form of the client's own `display interval` line (presentation-time gaps, misses): comparable with the field logs
+    var wcsv = "t_start,mean_ms,min_ms,max_ms,frames,over15,misses\n"
+    if ticks.count > 2 {
+        var i = 0
+        while i < ticks.count - 1 {
+            let t0w = ticks[i].t; var gaps: [Double] = []; var miss = 0; var j = i
+            while j < ticks.count - 1 && ticks[j].t < t0w + 10 { gaps.append((ticks[j + 1].vsync - ticks[j].vsync) * 1000); if ticks[j].missed { miss += 1 }; j += 1 }
+            if !gaps.isEmpty && ticks[j].t >= t0w + 9.9 {
+                wcsv += String(format: "%.1f,%.3f,%.3f,%.1f,%d,%d,%d\n", t0w, gaps.reduce(0, +) / Double(gaps.count), gaps.min()!, gaps.max()!, gaps.count + 1, gaps.filter { $0 > 15 }.count, miss)
+            }
+            i = max(j, i + 1)
+        }
+    }
+    try? wcsv.write(toFile: "\(outDir)/windows.csv", atomically: true, encoding: .utf8)
     let n = Double(max(ticks.count, 1))
     let new = Double(ticks.filter { $0.shown == .new }.count), rep = Double(ticks.filter { $0.shown == .repeated }.count)
     let blank = Double(ticks.filter { $0.shown == .blank }.count)
