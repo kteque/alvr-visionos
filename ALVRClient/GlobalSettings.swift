@@ -37,6 +37,10 @@ struct GlobalSettings: Codable {
     var lastUsedAppVersion = "never launched"
     var chaperoneDistanceCm: Int = 0
     var claimControllerHomeButton: Bool = true
+    /// Translation correction through the compositor (test build): the distance in cm of the plane the picture is treated as lying on, so
+    /// that visionOS corrects the head's movement since the frame was rendered (position as well as rotation). 0 = off (the 1.3.9 way:
+    /// our own rotation-only warp, depth at infinity). Near objects swim a little when the plane is far from them.
+    var translationPlaneCm: Int = 300
     
     private enum LegacyKeys: String, CodingKey { case fovRenderScale }
 
@@ -70,6 +74,7 @@ struct GlobalSettings: Codable {
         self.lastUsedAppVersion = try container.decodeIfPresent(String.self, forKey: .lastUsedAppVersion) ?? self.lastUsedAppVersion
         self.chaperoneDistanceCm = try container.decodeIfPresent(Int.self, forKey: .chaperoneDistanceCm) ?? self.chaperoneDistanceCm
         self.claimControllerHomeButton = try container.decodeIfPresent(Bool.self, forKey: .claimControllerHomeButton) ?? self.claimControllerHomeButton
+        self.translationPlaneCm = try container.decodeIfPresent(Int.self, forKey: .translationPlaneCm) ?? self.translationPlaneCm
     }
 }
 

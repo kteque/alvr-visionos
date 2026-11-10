@@ -160,6 +160,13 @@ class Renderer {
     
     // Was curious if it improved; it's still juddery.
     var useApplesReprojection = false
+
+    // Translation correction through the compositor (test build, setting translationPlaneCm). On: the drawable's device anchor is the anchor at the
+    // frame's own pose time, so our rotation warp collapses to nothing and visionOS reprojects the whole difference (rotation and head movement) from
+    // the pose the picture was rendered for to the pose at scan-out; the depth is a plane at the chosen distance (reverse-Z value below) so that it
+    // knows how far the picture is. nil: the 1.3.9 behaviour (depth at infinity, our rotation warp to the predicted display pose).
+    var compositorPlaneDepth: Double? = nil
+    var transAttempts = 0, transUsed = 0, transLastLog = CACurrentMediaTime()   // one log line per 10 s: how often the frame's anchor could be used
     
     var hdrEnabled = false
     var currentRenderColorFormat = renderColorFormatSDR
@@ -927,7 +934,29 @@ class Renderer {
 #endif
         }
         
-        let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
+        // Translation correction (see compositorPlaneDepth): the anchor of the frame's own pose time instead of the display's. One anchor only is
+        // queried (anchors alias each other's state); when the frame's pose time cannot be queried (too old, not tracked) the display's anchor is
+        // used and everything below behaves as in 1.3.9.
+        var deviceAnchor: DeviceAnchor? = nil
+        var compositorWarp = false
+        let planeMeters = Double(ALVRClientApp.gStore.settings.translationPlaneCm) / 100.0
+        if planeMeters > 0, renderingStreaming, let q = queuedFrame, q.viewParamsValid {
+            let frameTime = Double(q.timestamp) / Double(NSEC_PER_SEC)
+            let age = vsyncTime - frameTime
+            transAttempts += 1
+            if age > 0 && age < 0.4, let fa = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: frameTime), fa.isTracked {
+                deviceAnchor = fa
+                compositorWarp = true
+                transUsed += 1
+            }
+        }
+        if transAttempts > 0 && CACurrentMediaTime() - transLastLog >= 10.0 {
+            ("[trans] translation correction through the compositor: plane \(planeMeters) m, the frame's anchor used on \(transUsed) of \(transAttempts) frames").withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+            transAttempts = 0; transUsed = 0; transLastLog = CACurrentMediaTime()
+        }
+        if deviceAnchor == nil {
+            deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
+        }
         
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
             if EventHandler.shared.alvrInitialized, let submitted = queuedFrame, EventHandler.shared.markSubmitted(submitted.timestamp) {
@@ -1004,6 +1033,15 @@ class Renderer {
             let realViewTangents = drawable.views.enumerated().map { (idx, v) in EventHandler.shared.realViewTangents[idx] }
             let nearZ =  Double(drawable.depthRange.y)
             let farZ = Double(drawable.depthRange.x)
+            if compositorWarp && renderingStreaming && frameIsSuitableForDisplaying && queuedFrame != nil {
+                // Depth of a point `planeMeters` straight ahead, with the same reverse-Z projection as the uniforms (the tangents do not matter on the axis).
+                let proj = matrix_float4x4(ProjectiveTransform3D(leftTangent: 1, rightTangent: 1, topTangent: 1, bottomTangent: 1, nearZ: nearZ, farZ: farZ, reverseZ: true))
+                let clip = proj * simd_float4(0, 0, Float(-planeMeters), 1)
+                let d = Double(clip.z / clip.w)
+                compositorPlaneDepth = (d.isFinite && d > 0 && d <= 1) ? d : nil
+            } else {
+                compositorPlaneDepth = nil
+            }
             let simdDeviceAnchor = WorldTracker.shared.floorCorrectionTransform.asFloat4x4() * (deviceAnchor?.originFromAnchorTransform ?? matrix_identity_float4x4)
             let framePose = framePreviouslyPredictedPose ?? matrix_identity_float4x4
             
@@ -1162,7 +1200,7 @@ class Renderer {
         renderPassDescriptor.depthAttachment.texture = renderTargetDepth
         renderPassDescriptor.depthAttachment.loadAction = .clear
         renderPassDescriptor.depthAttachment.storeAction = .store
-        renderPassDescriptor.depthAttachment.clearDepth = 0.000000001
+        renderPassDescriptor.depthAttachment.clearDepth = compositorPlaneDepth ?? 0.000000001
         renderPassDescriptor.rasterizationRateMap = rasterizationRateMap
         
         renderPassDescriptor.renderTargetArrayLength = viewports.count
@@ -1173,6 +1211,12 @@ class Renderer {
         }
         
         renderEncoder.label = "Rerender depth"
+
+        if compositorPlaneDepth != nil {
+            // The whole view lies on the plane: the clear above is the depth, nothing is drawn (the frame quad at 500 m would overwrite it).
+            renderEncoder.endEncoding()
+            return
+        }
         
         renderEncoder.pushDebugGroup("Draw ALVR Frame Depth")
         renderEncoder.setCullMode(.back)

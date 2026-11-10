@@ -114,6 +114,16 @@ struct Entry: View {
                     Text("Proximity chaperone")
                 }
                 .toggleStyle(.switch)
+                Picker("Translation correction", selection: $gStore.settings.translationPlaneCm) {
+                    Text("Off").tag(0)
+                    Text("1.5 m").tag(150)
+                    Text("3 m").tag(300)
+                    Text("6 m").tag(600)
+                    Text("12 m").tag(1200)
+                }
+                .onChange(of: gStore.settings.translationPlaneCm) {
+                    saveAction()
+                }
                 Toggle(isOn: $gStore.settings.autoConnect) {
                     Text("Auto-connect")
                 }
