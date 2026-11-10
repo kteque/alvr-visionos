@@ -19,7 +19,9 @@ final class DisplaySim: @unchecked Sendable {
     enum Shown { case blank, new, repeated }
     struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double?
         // the compositor's presentation time of this tick (the rig reads display intervals from it) and whether the frame missed its deadline
-        var vsync: Double = 0; var missed = false }
+        var vsync: Double = 0; var missed = false
+        // the timestamp the shown frame carries (the presentation time it was predicted for) and the pick result: 0 none, 1 fresh, 2 resubmit, 3 reprojected
+        var frameTs: UInt64 = 0; var pick: UInt8 = 0 }
     /// Rig: extra CPU cost (ms) of a frame, called once per frame on the render thread (the field's tracking-query spikes and stalls). nil = none.
     nonisolated(unsafe) var extraCostMs: (() -> Double)? = nil
     /// Rig: a frame that ends after its own presentation time misses the compositor's deadline: that tick shows the previous picture and the next
@@ -103,6 +105,7 @@ final class DisplaySim: @unchecked Sendable {
         var streamingActiveForFrame = eh.streamingActive
         var isReprojected = false
         var pickedFresh = false
+        var pickKind: UInt8 = 0
         var queuedFrame: QueuedFrame? = nil
 
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
@@ -111,15 +114,18 @@ final class DisplaySim: @unchecked Sendable {
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
         switch pick {
         case .resubmit(let f):
+            pickKind = 2
             HarnessStats.shared.count("pick_resubmit")
             queuedFrame = f
             eh.framesRendered -= 1
             isReprojected = false
         case .fresh(let f):
+            pickKind = 1
             HarnessStats.shared.count("pick_fresh")
             pickedFresh = true
             queuedFrame = f
         case .reprojected(let f):
+            pickKind = 3
             HarnessStats.shared.count("pick_reprojected")
             queuedFrame = f
             eh.framesRendered -= 1
@@ -187,7 +193,7 @@ final class DisplaySim: @unchecked Sendable {
         let nowT = HarnessLog.shared.now()
         var ageMs: Double? = nil
         if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
-        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, vsync: vsyncTime))
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, vsync: vsyncTime, frameTs: queuedFrame?.timestamp ?? 0, pick: pickKind))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)

@@ -78,6 +78,21 @@ func writeReport() {
         var run = 0, worst = 0, gaps = 0
         for t in w { if t.shown == .new { if run >= 1 { gaps += 1 }; run = 0 } else { run += 1; worst = max(worst, run) } }
         m["win_new_gaps_per_1000"] = Double(gaps) / wn * 1000; m["win_worst_run_ticks"] = Double(worst)
+        // frame age at display: the tick's presentation time minus the presentation time the frame's pose was predicted for (client clock only)
+        let ages = w.filter { $0.shown == .new && $0.frameTs > 0 }.map { ($0.vsync - Double($0.frameTs) / 1e9) * 1000 }.sorted()
+        if !ages.isEmpty {
+            func q(_ f: Double) -> Double { ages[min(ages.count - 1, Int(Double(ages.count) * f))] }
+            m["win_age_p50_ms"] = q(0.5); m["win_age_p95_ms"] = q(0.95); m["win_age_p99_ms"] = q(0.99); m["win_age_max_ms"] = ages.last!
+        }
+        // repeats by cause (per 1000 ticks): the pick's result when it had nothing new, and the render thread's missed deadlines (doubled intervals)
+        m["win_pick_resubmit_per_1000"] = Double(w.filter { $0.pick == 2 }.count) / wn * 1000
+        m["win_pick_reprojected_per_1000"] = Double(w.filter { $0.pick == 3 }.count) / wn * 1000
+        m["win_pick_none_per_1000"] = Double(w.filter { $0.pick == 0 }.count) / wn * 1000
+        m["win_missed_deadline_per_1000"] = Double(w.filter { $0.missed }.count) / wn * 1000
+        // worst second: the lowest share of new frames in any 100 consecutive ticks
+        if w.count >= 100 { var best = 1.0; var cnt = w[0..<100].filter { $0.shown == .new }.count
+            for i in 100..<w.count { cnt += (w[i].shown == .new ? 1 : 0) - (w[i - 100].shown == .new ? 1 : 0); best = min(best, Double(cnt) / 100) }
+            m["win_worst_100tick_new_fraction"] = best }
     }
     let st = HarnessStats.shared
     st.lock.lock(); for (k, v) in st.counters { m["ev_" + k] = Double(v) }; m["decoded_frames"] = Double(st.decodedFrames); st.lock.unlock()
