@@ -72,7 +72,8 @@ final class DisplaySim: @unchecked Sendable {
             renderFrame(presentation: nextVsync)
             if strictDeadline {
                 let cur = nextVsync
-                let now2 = CACurrentMediaTime()
+                // the frame ends when its GPU work does (gpuMs after the CPU side returns): that is what the compositor's deadline is measured against
+                let now2 = CACurrentMediaTime() + gpuMs / 1000
                 if now2 > cur {
                     let k = ((now2 - cur) / period).rounded(.up)
                     nextVsync = cur + (k + 1) * period
