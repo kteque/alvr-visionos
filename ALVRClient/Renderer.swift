@@ -671,6 +671,20 @@ class Renderer {
     var teleFreshWithQueued = 0                                     // resubmits where a fresh frame was waiting (the rule at EventHandler.pollFrameForDisplay)
     var teleLastThermal: Int = -1
 
+    // Read-only (branch pose_telemetry), render thread only.
+    // Where the latency sits between the decoded frame and the display: Apple's own lead (optimal input time -> presentation time, deadline -> presentation),
+    // our wake-up and wait, and how long a fresh frame lives from the decoder queue to its presentation.
+    var teleDesignLead = TeleSeries()      // presentationTime - optimalInputTime of the drawable's frame timing
+    var teleDeadlineLead = TeleSeries()    // presentationTime - renderingDeadline
+    var teleWakeLate = TeleSeries()        // end of the wait for optimalInputTime, after it (positive = woke late)
+    var teleEnqToPresent = TeleSeries()    // fresh frames: decoder queue entry -> presentation time
+    var telePickToPresent = TeleSeries()   // end of the pick -> presentation time
+    // How far the compositor has to move the picture: the pose the frame was rendered for against the display's pose, and how old the frame's pose is.
+    var teleStale = TeleSeries()           // presentation time - the timestamp the frame was sent with (the vsync it was predicted for)
+    var teleReprojAngle = TeleSeries()     // degrees between the frame's head pose and the display's head pose (fresh frames)
+    var teleReprojPos = TeleSeries()       // millimetres between them
+    var teleReprojSpeed = TeleSeries()     // angle / staleness, degrees per second (the head speed the correction covers)
+
     /// After `endSubmission`: how long before (positive) or after (negative) the compositor's rendering deadline this frame's submission ended.
     // Draw cost (read-only): CPU time from the end of the pick to `commit`, GPU time of the command buffer, and how long before (positive)
     // or after (negative) the presentation time the GPU finished. The completion handler runs on another thread, hence the lock.
@@ -834,6 +848,11 @@ class Renderer {
                            teleDepthTicks > 0 ? Double(teleDepthSum) / Double(teleDepthTicks) : 0, teleDepthMax,
                            teleFreshLate, (teleFreshLate + telePickReproj) > 0 ? teleWaitSum / Double(teleFreshLate + telePickReproj) * 1000 : 0, teleWaitMax * 1000,
                            telePickFresh > 0 ? teleAgeSum / Double(telePickFresh) * 1000 : 0, teleAgeMax * 1000))
+            teleLog("timeline (ms): Apple lead, optimal input -> presentation \(teleDesignLead.summary(scale: 1000)); rendering deadline -> presentation \(teleDeadlineLead.summary(scale: 1000)); our wake after optimal input \(teleWakeLate.summary(scale: 1000)); pick end -> presentation \(telePickToPresent.summary(scale: 1000)); fresh frame, decoder queue entry -> presentation \(teleEnqToPresent.summary(scale: 1000))")
+            teleLog("compositor correction over \(teleReprojAngle.n) fresh frames: frame pose age (ms) \(teleStale.summary(scale: 1000, digits: 1)); angle (deg) \(teleReprojAngle.summary(digits: 3)); position (mm) \(teleReprojPos.summary(digits: 1)); angle/age (deg/s) \(teleReprojSpeed.summary(digits: 1))")
+            for line in WorldTracker.shared.telePoseLines() { teleLog(line) }
+            teleDesignLead.reset(); teleDeadlineLead.reset(); teleWakeLate.reset(); teleEnqToPresent.reset(); telePickToPresent.reset()
+            teleStale.reset(); teleReprojAngle.reset(); teleReprojPos.reset(); teleReprojSpeed.reset()
             telePickFresh = 0; telePickResubmit = 0; telePickReproj = 0; telePickNone = 0; teleDepthSum = 0; teleDepthMax = 0; teleDepthTicks = 0
             teleFreshLate = 0; teleWaitSum = 0; teleWaitMax = 0; teleAgeSum = 0; teleAgeMax = 0; teleFreshWithQueued = 0
             if teleLastWindowMean > 0 && mean > 0 && abs(mean - teleLastWindowMean) / teleLastWindowMean > 0.03 {
@@ -909,6 +928,8 @@ class Renderer {
         let telePickDepth = EventHandler.shared.queueDepth()
         let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.005)
         let telePickEnd = CACurrentMediaTime()
+        let teleOptimalInput = LayerRenderer.Clock.Instant.epoch.duration(to: timing.optimalInputTime).timeInterval
+        if streamingActiveForFrame { teleWakeLate.add(telePickStart - teleOptimalInput) }
         if streamingActiveForFrame { telePick(telePicked, depth: telePickDepth, waited: telePickEnd - telePickStart) }
         switch telePicked {
         case .resubmit(let f):
@@ -1092,6 +1113,13 @@ class Renderer {
         let vsyncTime = LayerRenderer.Clock.Instant.epoch.duration(to: mainDrawable.frameTiming.presentationTime).timeInterval
         let vsyncTimeNs = UInt64(vsyncTime * Double(NSEC_PER_SEC))
         logTelemetry(drawable: mainDrawable, vsyncTime: vsyncTime)
+        if streamingActiveForFrame {
+            let ft = mainDrawable.frameTiming
+            teleDesignLead.add(vsyncTime - LayerRenderer.Clock.Instant.epoch.duration(to: ft.optimalInputTime).timeInterval)
+            teleDeadlineLead.add(vsyncTime - LayerRenderer.Clock.Instant.epoch.duration(to: ft.renderingDeadline).timeInterval)
+            telePickToPresent.add(vsyncTime - telePickEnd)
+            if case .fresh = telePicked, let q = queuedFrame { teleEnqToPresent.add(vsyncTime - q.enqueuedAt) }
+        }
         let framePreviouslyPredictedPose = queuedFrame != nil ? WorldTracker.shared.convertSteamVRViewPose(queuedFrame!.viewParams) : nil
         let teleSubD = CACurrentMediaTime()
         
@@ -1136,6 +1164,17 @@ class Renderer {
         let telePhase2 = CACurrentMediaTime()
         let deviceAnchor = WorldTracker.shared.worldTracking.queryDeviceAnchor(atTimestamp: vsyncTime)
         let telePhase3 = CACurrentMediaTime()
+        // pose_telemetry: how far the compositor has to move this fresh frame (its head pose against the display's), and the age of that pose
+        if streamingActiveForFrame, case .fresh = telePicked, let q = queuedFrame, q.viewParamsValid, let fp = framePreviouslyPredictedPose, let da = deviceAnchor {
+            let age = vsyncTime - Double(q.timestamp) / Double(NSEC_PER_SEC)
+            if age > 0 && age < 0.5 {
+                let qa = simd_quaternion(fp), qb = simd_quaternion(da.originFromAnchorTransform)
+                let angle = 2.0 * acos(min(1.0, Double(abs(simd_dot(qa, qb))))) * 180.0 / Double.pi
+                let pa = fp.columns.3, pb = da.originFromAnchorTransform.columns.3
+                let pos = Double(simd_length(simd_float3(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z))) * 1000.0
+                teleStale.add(age); teleReprojAngle.add(angle); teleReprojPos.add(pos); teleReprojSpeed.add(angle / age)
+            }
+        }
         
         commandBuffer.addCompletedHandler { (_ commandBuffer)-> Swift.Void in
             if EventHandler.shared.streamingActive {

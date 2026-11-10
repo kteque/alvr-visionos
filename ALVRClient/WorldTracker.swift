@@ -236,6 +236,22 @@ final class FloorReadout: ObservableObject {
     }
 }
 
+/// Read-only telemetry (branch pose_telemetry): the samples of one quantity over a 10 s window, summarised as mean / p95 / max. No state outside the window.
+struct TeleSeries {
+    var v: [Double] = []
+    var n: Int { v.count }
+    mutating func add(_ x: Double) { if v.count < 4000 { v.append(x) } }
+    mutating func reset() { v.removeAll(keepingCapacity: true) }
+    /// "mean a p95 b max c" scaled by `scale` (1000 for ms), or "n/a" without samples.
+    func summary(scale: Double = 1.0, digits: Int = 2) -> String {
+        guard !v.isEmpty else { return "n/a" }
+        let s = v.sorted()
+        let mean = s.reduce(0, +) / Double(s.count)
+        let p95 = s[min(s.count - 1, Int(Double(s.count) * 0.95))]
+        return String(format: "mean %.\(digits)f p95 %.\(digits)f max %.\(digits)f", mean * scale, p95 * scale, s[s.count - 1] * scale)
+    }
+}
+
 class WorldTracker {
     static let shared = WorldTracker()
     
@@ -315,6 +331,53 @@ class WorldTracker {
     var fbFaceTrackingValid = false
     
     static let maxPrediction = 30 * NSEC_PER_MSEC
+
+    // MARK: Read-only pose telemetry (branch pose_telemetry), render thread only. Written by sendTracking, printed and reset by Renderer.logTelemetry.
+    // How far ahead the head query asked and how far Apple let it go, and how well the pose we sent matched the pose ARKit later reports for that time.
+    var telePoseCalls = 0, telePoseWalkBacks = 0, telePoseFallbacks = 0, telePoseMissing = 0
+    var telePoseAsked = TeleSeries(), telePoseGot = TeleSeries(), telePoseQueryCost = TeleSeries()
+    struct TelePending { var t: Double; var rot: simd_quatf; var pos: simd_float3; var horizon: Double }
+    var telePending: [TelePending] = []
+    var telePredAngle = [TeleSeries](repeating: TeleSeries(), count: 4)   // by horizon: <10, 10-20, 20-30, 30+ ms
+    var telePredPos = [TeleSeries](repeating: TeleSeries(), count: 4)
+    static let telePredLabels = ["<10 ms", "10-20 ms", "20-30 ms", "30+ ms"]
+
+    /// Called at the end of sendTracking (after every other query of the call): resolves the oldest pending sample that is at least 60 ms in the past,
+    /// so the second query asks for a time that has already happened (a measured pose, not a prediction). One query per call, a past timestamp like
+    /// the refetch query already in sendTracking.
+    func telePredictionVerify(now: Double) {
+        if telePending.count > 16 { telePending.removeFirst(telePending.count - 16) }
+        guard let first = telePending.first, first.t < now - 0.060 else { return }
+        telePending.removeFirst()
+        let q0 = CACurrentMediaTime()
+        let anchor = worldTracking.queryDeviceAnchor(atTimestamp: first.t)
+        telePoseQueryCost.add(CACurrentMediaTime() - q0)
+        guard let a = anchor else { telePoseMissing += 1; return }
+        let m = a.originFromAnchorTransform
+        let q = simd_quaternion(m)
+        let angle = 2.0 * acos(min(1.0, Double(abs(simd_dot(q, first.rot))))) * 180.0 / Double.pi
+        let pos = Double(simd_length(simd_float3(m.columns.3.x, m.columns.3.y, m.columns.3.z) - first.pos)) * 1000.0
+        let h = first.horizon * 1000.0
+        let b = h < 10 ? 0 : (h < 20 ? 1 : (h < 30 ? 2 : 3))
+        telePredAngle[b].add(angle)
+        telePredPos[b].add(pos)
+    }
+
+    /// The window's pose lines; resets the window.
+    func telePoseLines() -> [String] {
+        var out: [String] = []
+        out.append(String(format: "pose query over %d calls: horizon asked (ms) %@; granted by ARKit %@; walked back %d, fallback to now %d; verify query cost (ms) %@",
+                          telePoseCalls, telePoseAsked.summary(scale: 1000, digits: 1), telePoseGot.summary(scale: 1000, digits: 1), telePoseWalkBacks, telePoseFallbacks, telePoseQueryCost.summary(scale: 1000, digits: 2)))
+        var parts: [String] = []
+        for i in 0..<4 where telePredAngle[i].n > 0 {
+            parts.append(String(format: "%@ n=%d angle (deg) %@ pos (mm) %@", WorldTracker.telePredLabels[i], telePredAngle[i].n, telePredAngle[i].summary(digits: 3), telePredPos[i].summary(digits: 1)))
+        }
+        out.append("pose prediction error (sent pose vs ARKit's later report for the same time, by horizon): " + (parts.isEmpty ? "no samples" : parts.joined(separator: "; ")) + (telePoseMissing > 0 ? "; verify query returned nil \(telePoseMissing)" : ""))
+        telePoseCalls = 0; telePoseWalkBacks = 0; telePoseFallbacks = 0; telePoseMissing = 0
+        telePoseAsked.reset(); telePoseGot.reset(); telePoseQueryCost.reset()
+        for i in 0..<4 { telePredAngle[i].reset(); telePredPos[i].reset() }
+        return out
+    }
     static let deviceIdHead = alvr_path_string_to_id("/user/head")
     static let deviceIdLeftHand = alvr_path_string_to_id("/user/hand/left")
     static let deviceIdRightHand = alvr_path_string_to_id("/user/hand/right")
@@ -2190,6 +2253,7 @@ class WorldTracker {
         var targetTimestampWalkedBack = targetTimestamp + headLookahead
         // Telemetry only (render thread): where this call's time goes, read by Renderer after the call.
         let teleT0 = CACurrentMediaTime()
+        defer { telePredictionVerify(now: CACurrentMediaTime()) }   // declared before the segment defer below, so it runs after it and is not counted in the segments
         var teleT1 = teleT0, teleT2 = teleT0, teleT3 = teleT0
         var teleIters = 0
         defer { teleTrkLast = [teleT1 - teleT0, teleT2 - teleT1, teleT3 - teleT2, CACurrentMediaTime() - teleT3]; teleTrkIters = teleIters }
@@ -2232,6 +2296,7 @@ class WorldTracker {
         
         // Fallback.
         if deviceAnchor == nil {
+            telePoseFallbacks += 1
             targetTimestampWalkedBack = CACurrentMediaTime()
             deviceAnchor = worldTracking.queryDeviceAnchor(atTimestamp: targetTimestampWalkedBack)
         }
@@ -2278,6 +2343,15 @@ class WorldTracker {
             print("anchor finalized")
         }
         sentPoses += 1
+        // pose_telemetry: what was asked, what was granted, and a sample to check against ARKit's later report (every other call)
+        telePoseCalls += 1
+        telePoseAsked.add(targetTimestamp + headLookahead - teleT0)
+        telePoseGot.add(targetTimestampWalkedBack - teleT0)
+        if teleIters > 1 { telePoseWalkBacks += 1 }
+        if telePoseCalls % 2 == 0 {
+            let m = deviceAnchor.originFromAnchorTransform
+            telePending.append(TelePending(t: targetTimestampWalkedBack, rot: simd_quaternion(m), pos: simd_float3(m.columns.3.x, m.columns.3.y, m.columns.3.z), horizon: targetTimestampWalkedBack - teleT0))
+        }
         
         //let targetTimestampNS = UInt64(targetTimestampWalkedBack * Double(NSEC_PER_SEC))
         let reportedTargetTimestampNS = UInt64(reportedTargetTimestamp * Double(NSEC_PER_SEC))
