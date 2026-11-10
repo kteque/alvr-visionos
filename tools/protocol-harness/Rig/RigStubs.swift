@@ -7,8 +7,8 @@ import AppleShims
 
 // MARK: - Globals the client reads
 
-let renderWidth = Int(1888)          // MetalClientSystem.swift:26
-let renderHeight = Int(1824)         // MetalClientSystem.swift:27
+nonisolated(unsafe) var renderWidth = Int(1888)          // MetalClientSystem.swift:26 (rig: --view-width / 2, the client declares renderWidth*2 per eye)
+nonisolated(unsafe) var renderHeight = Int(1824)         // MetalClientSystem.swift:27 (rig: --view-height / 2)
 let defaultRefreshRate = Float(90.0) // VideoHandler.swift:17 (no AV1 hardware decoder => 90)
 var refreshRate = defaultRefreshRate // VideoHandler.swift:18
 
