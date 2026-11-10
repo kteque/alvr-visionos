@@ -28,6 +28,18 @@ func exit(_ code: Int32) -> Never {
 
 // MARK: - WorldTracker (tracking uplink only)
 
+enum RigPose {
+    nonisolated(unsafe) static var yawAmp = 0.5      // rad, the mock client's scenarios use 0.5 at 0.25 Hz
+    nonisolated(unsafe) static var yawHz = 0.25
+    static func pose(x: Float = 0, y: Float = 0, z: Float = 0, yaw: Double = 0) -> AlvrPose {
+        var p = AlvrPose()
+        p.orientation = AlvrQuat(x: 0, y: Float(sin(yaw / 2)), z: 0, w: Float(cos(yaw / 2)))   // a unit quaternion: the host and the runtime reject w = 0
+        p.position = (x, y, z)
+        return p
+    }
+    static func headYaw(at t: Double) -> Double { yawAmp * sin(2 * .pi * yawHz * t) }
+}
+
 final class WorldTracker {
     nonisolated(unsafe) static let shared = WorldTracker()
     static let deviceIdHead: UInt64 = alvr_path_string_to_id("/user/head")
@@ -52,10 +64,11 @@ final class WorldTracker {
         let targetTimestampNS = UInt64(targetTimestamp * Double(NSEC_PER_SEC))
         let viewFovsPtr = UnsafeMutablePointer<AlvrViewParams>.allocate(capacity: 2)
         defer { viewFovsPtr.deallocate() }
-        viewFovsPtr[0] = AlvrViewParams(pose: AlvrPose(), fov: viewFovs[0])
-        viewFovsPtr[1] = AlvrViewParams(pose: AlvrPose(), fov: viewFovs[1])
+        viewFovsPtr[0] = AlvrViewParams(pose: RigPose.pose(x: -0.0315), fov: viewFovs[0])
+        viewFovsPtr[1] = AlvrViewParams(pose: RigPose.pose(x: 0.0315), fov: viewFovs[1])
         var motion = AlvrDeviceMotion()
         motion.device_id = WorldTracker.deviceIdHead
+        motion.pose = RigPose.pose(y: 1.6)
         alvr_send_view_params(UnsafePointer(viewFovsPtr))
         var motions = [motion]
         alvr_send_tracking(targetTimestampNS, &motions, 1, nil, nil)
@@ -66,8 +79,8 @@ final class WorldTracker {
     func sendViewParams(viewTransforms: [simd_float4x4], viewFovs: [AlvrFov]) {
         let p = UnsafeMutablePointer<AlvrViewParams>.allocate(capacity: 2)
         defer { p.deallocate() }
-        p[0] = AlvrViewParams(pose: AlvrPose(), fov: viewFovs[0])
-        p[1] = AlvrViewParams(pose: AlvrPose(), fov: viewFovs[1])
+        p[0] = AlvrViewParams(pose: RigPose.pose(x: -0.0315), fov: viewFovs[0])
+        p[1] = AlvrViewParams(pose: RigPose.pose(x: 0.0315), fov: viewFovs[1])
         alvr_send_view_params(UnsafePointer(p))
     }
 
@@ -79,6 +92,7 @@ final class WorldTracker {
         EventHandler.shared.outgoingWorker.enqueue {
             var motion = AlvrDeviceMotion()
             motion.device_id = WorldTracker.deviceIdHead
+            motion.pose = RigPose.pose(y: 1.6, yaw: RigPose.headYaw(at: reportedTargetTimestamp))
             var motions = [motion]
             alvr_send_tracking_and_face_data(reportedTargetTimestampNS, &motions, 1, nil, nil, nil)
         }
