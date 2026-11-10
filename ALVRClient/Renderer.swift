@@ -670,7 +670,6 @@ class Renderer {
     var teleAgeSum: Double = 0, teleAgeMax: Double = 0             // fresh picks: how long the frame sat in the queue before this tick, seconds
     var teleFreshWithQueued = 0                                     // resubmits where a fresh frame was waiting (the rule at EventHandler.pollFrameForDisplay)
     var teleLastThermal: Int = -1
-    var teleWindowIndex = 0          // windows closed so far; the pick arm changes every 3 (EventHandler.pickAlternation)
 
     // Read-only (branch pose_telemetry), render thread only.
     // Where the latency sits between the decoded frame and the display: Apple's own lead (optimal input time -> presentation time, deadline -> presentation),
@@ -855,8 +854,6 @@ class Renderer {
             teleLog(teleDrawLine())
             teleLog(teleSegmentsLine())
             let ticks = max(telePickFresh + telePickResubmit + telePickReproj + telePickNone, 1)
-            let armB = EventHandler.pickAlternation && !EventHandler.catchUpPick
-            teleLog("pick arm " + (EventHandler.pickAlternation ? (armB ? "B (no catch-up, wait 8 ms)" : "A (catch-up, wait 5 ms)") : "fixed"))
             teleLog(String(format: "pick over %d ticks: fresh %d, resubmit %d (%d with a fresh frame queued), reprojected %d, none %d; queue depth at pick mean %.2f max %d; fresh frames that arrived after the pick began %d (wait mean %.2f ms max %.2f incl. reprojected); fresh frame age in queue mean %.2f ms max %.2f",
                            ticks, telePickFresh, telePickResubmit, teleFreshWithQueued, telePickReproj, telePickNone,
                            teleDepthTicks > 0 ? Double(teleDepthSum) / Double(teleDepthTicks) : 0, teleDepthMax,
@@ -879,12 +876,6 @@ class Renderer {
                 teleLog(String(format: "DISPLAY RATE CHANGED %.1f Hz -> %.1f Hz", 1.0 / teleLastWindowMean, 1.0 / mean))
             }
             if mean > 0 { teleLastWindowMean = mean }
-            teleWindowIndex += 1
-            if EventHandler.pickAlternation {
-                let b = (teleWindowIndex / 3) % 2 == 1
-                EventHandler.catchUpPick = !b
-                EventHandler.pickWaitSeconds = b ? 0.008 : 0.005
-            }
             teleLastThermal = thermal
             teleWindowStart = now; teleCount = 0; teleSum = 0; teleMin = .infinity; teleMax = 0; teleLate = 0; teleMisses = 0; teleMinSlack = .infinity
         }
@@ -952,7 +943,7 @@ class Renderer {
         // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread
         let telePickStart = CACurrentMediaTime()
         let telePickDepth = EventHandler.shared.queueDepth()
-        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: EventHandler.pickWaitSeconds)
+        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.005)
         let telePickEnd = CACurrentMediaTime()
         let teleOptimalInput = LayerRenderer.Clock.Instant.epoch.duration(to: timing.optimalInputTime).timeInterval
         if streamingActiveForFrame { teleWakeLate.add(telePickStart - teleOptimalInput) }

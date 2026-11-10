@@ -142,10 +142,6 @@ class EventHandler: ObservableObject {
     /// every tick shows a frame a period older than it has to be. With this on, a pick that finds 2 queued frames shows the newer and
     /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
     static var catchUpPick = true
-    // A/B test (pacing rig screening 2026-11-10, docs/VISIONOS_PERFORMANCE_PLAN.md section C): arm B = no catch-up and a longer wait for the
-    // frame in flight. The renderer switches the arm at telemetry window boundaries (30 s blocks), so every window runs one arm and says which.
-    static let pickAlternation = true
-    static var pickWaitSeconds = 0.005
     var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
     var queueOverflowDrops = 0   // telemetry: decoded frames discarded because the queue already held 2 (read under frameQueueLock)
     var frameQueueLastImageBuffer: CVImageBuffer? = nil
