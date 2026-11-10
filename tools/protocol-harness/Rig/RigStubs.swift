@@ -274,6 +274,8 @@ final class RigFrames: @unchecked Sendable {
 final class RigMisses: @unchecked Sendable {
     static let shared = RigMisses()
     nonisolated(unsafe) static var baseRate = 0.0022
+    /// opt-in: the baseline miss rate while the display runs below 95 Hz (field, afternoon log: 23 per 1000 on the 90 Hz stays against 3.3 on the 100 Hz grid)
+    nonisolated(unsafe) static var baseRate90: Double? = nil
     nonisolated(unsafe) static var storms: [(t0: Double, peak: Double, tauS: Double, stallMs: Double)] = []
     private let lock = NSLock()
     private var rng = RigRng(state: 0xA5A5F00DCAFEBABE ^ RigNet.seed)
@@ -293,7 +295,7 @@ final class RigMisses: @unchecked Sendable {
             if s.stallMs > 0 { cost = max(cost, s.stallMs) }
             HarnessLog.shared.event("miss_storm", ["at_s": String(format: "%.1f", el), "peak": "\(s.peak)", "tau_s": "\(s.tauS)", "stall_ms": "\(s.stallMs)"])
         }
-        var rate = RigMisses.baseRate
+        var rate = (DisplaySim.shared.displayHz < 95 ? RigMisses.baseRate90 : nil) ?? RigMisses.baseRate
         for i in 0..<stormsDone {
             let s = RigMisses.storms[i]
             rate += s.peak * exp(-max(0, el - s.t0) / s.tauS)

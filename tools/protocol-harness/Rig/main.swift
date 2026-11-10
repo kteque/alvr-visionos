@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 5] [--catch-up 0] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 5] [--catch-up 0] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -39,6 +39,7 @@ DisplaySim.shared.displayHz = Double(argValue("--display-hz") ?? "") ?? 100
 // field model: the display keeps its rate, the render thread misses deadlines (baseline + storms); --strict-deadline 0 keeps the harness's old rule
 DisplaySim.shared.strictDeadline = (argValue("--strict-deadline") ?? "1") != "0"
 if let v = argValue("--miss-rate").flatMap(Double.init) { RigMisses.baseRate = v }
+if let v = argValue("--miss-rate-90").flatMap(Double.init) { RigMisses.baseRate90 = v }
 for st in argValues("--storm") { let p = st.split(separator: ":").map { Double($0) ?? 0 }; if p.count >= 3 { RigMisses.storms.append((p[0], p[1], p[2], p.count > 3 ? p[3] : 0)) } }
 RigMisses.storms.sort { $0.t0 < $1.t0 }
 DisplaySim.shared.extraCostMs = { RigMisses.shared.extraCostMs() }
