@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 5] [--catch-up 0] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -26,6 +26,8 @@ if let v = argValue("--hiccup-rate").flatMap(Double.init) { RigNet.ratePerMin = 
 if let v = argValue("--hiccup-ms") { let p = v.split(separator: ":").map { Double($0) ?? 0 }; if p.count == 2 { RigNet.randLoMs = p[0]; RigNet.randHiMs = p[1] } }
 if let v = argValue("--view-width").flatMap(Int.init) { renderWidth = v / 2; RigConfig.width = v }
 if let v = argValue("--view-height").flatMap(Int.init) { renderHeight = v / 2; RigConfig.height = v }
+if let v = argValue("--poll-ms").flatMap(Double.init) { DisplaySim.shared.pollTimeout = v / 1000 }
+if (argValue("--catch-up") ?? "1") == "0" { EventHandler.catchUpPick = false }
 if let v = argValue("--yaw-amp").flatMap(Double.init) { RigPose.yawAmp = v }
 if let v = argValue("--yaw-hz").flatMap(Double.init) { RigPose.yawHz = v }
 if let v = argValue("--decode-ms").flatMap(Double.init) { RigConfig.decodeMs = v }

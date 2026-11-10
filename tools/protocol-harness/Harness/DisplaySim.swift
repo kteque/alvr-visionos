@@ -30,6 +30,8 @@ final class DisplaySim: @unchecked Sendable {
     /// presentation time skips ahead (a doubled interval, as the field's `display interval` lines show). false = the protocol harness's old rule.
     nonisolated(unsafe) var strictDeadline = false
     nonisolated(unsafe) var slackMs = 4.3
+    /// Rig: how long the pick waits for a late frame (the client's own value is 5 ms)
+    nonisolated(unsafe) var pollTimeout = 0.005
     nonisolated(unsafe) var lastExtraMs = 0.0
     let lock = NSLock()
     var ticks: [Tick] = []
@@ -112,7 +114,7 @@ final class DisplaySim: @unchecked Sendable {
 
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
         let pickStart = CACurrentMediaTime()
-        let pick = eh.pollFrameForDisplay(timeout: 0.005)
+        let pick = eh.pollFrameForDisplay(timeout: pollTimeout)
         let pickT = HarnessLog.shared.now()
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
         switch pick {
