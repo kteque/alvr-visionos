@@ -3,7 +3,7 @@
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
 //   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--decode-ms 5] [--decode-sd-ms 1]
-//              [--gpu-ms 4] [--echo] [--width W --height H]
+//              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
 import AppleShims
@@ -17,6 +17,13 @@ let seconds = Double(argValue("--seconds") ?? "") ?? 60
 try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
 HarnessLog.shared.open(path: "\(outDir)/rig_client.log")
 HarnessLog.shared.echo = args.contains("--echo")
+if let v = argValue("--net-ms").flatMap(Double.init) { RigNet.meanMs = v }
+if let v = argValue("--net-sd-ms").flatMap(Double.init) { RigNet.sdMs = v }
+if let v = argValue("--seed").flatMap(UInt64.init) { RigNet.seed = v }
+for h in argValues("--hiccup") { let p = h.split(separator: ":").map { Double($0) ?? 0 }; if p.count == 2 { RigNet.scripted.append((p[0], p[1])) } }
+RigNet.scripted.sort { $0.t < $1.t }
+if let v = argValue("--hiccup-rate").flatMap(Double.init) { RigNet.ratePerMin = v }
+if let v = argValue("--hiccup-ms") { let p = v.split(separator: ":").map { Double($0) ?? 0 }; if p.count == 2 { RigNet.randLoMs = p[0]; RigNet.randHiMs = p[1] } }
 if let v = argValue("--decode-ms").flatMap(Double.init) { RigConfig.decodeMs = v }
 if let v = argValue("--decode-sd-ms").flatMap(Double.init) { RigConfig.decodeSdMs = v }
 if let v = argValue("--gpu-ms").flatMap(Double.init) { DisplaySim.shared.gpuMs = v }
