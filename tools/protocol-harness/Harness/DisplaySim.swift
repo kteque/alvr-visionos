@@ -21,7 +21,9 @@ final class DisplaySim: @unchecked Sendable {
         // the compositor's presentation time of this tick (the rig reads display intervals from it) and whether the frame missed its deadline
         var vsync: Double = 0; var missed = false
         // the timestamp the shown frame carries (the presentation time it was predicted for) and the pick result: 0 none, 1 fresh, 2 resubmit, 3 reprojected
-        var frameTs: UInt64 = 0; var pick: UInt8 = 0 }
+        var frameTs: UInt64 = 0; var pick: UInt8 = 0
+        // when the pick returned (log clock): with the frame's decode time it gives the age of the frame in the queue
+        var pickT: Double = 0 }
     /// Rig: extra CPU cost (ms) of a frame, called once per frame on the render thread (the field's tracking-query spikes and stalls). nil = none.
     nonisolated(unsafe) var extraCostMs: (() -> Double)? = nil
     /// Rig: a frame that ends after its own presentation time misses the compositor's deadline: that tick shows the previous picture and the next
@@ -111,6 +113,7 @@ final class DisplaySim: @unchecked Sendable {
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
         let pickStart = CACurrentMediaTime()
         let pick = eh.pollFrameForDisplay(timeout: 0.005)
+        let pickT = HarnessLog.shared.now()
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
         switch pick {
         case .resubmit(let f):
@@ -193,7 +196,7 @@ final class DisplaySim: @unchecked Sendable {
         let nowT = HarnessLog.shared.now()
         var ageMs: Double? = nil
         if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
-        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, vsync: vsyncTime, frameTs: queuedFrame?.timestamp ?? 0, pick: pickKind))
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, vsync: vsyncTime, frameTs: queuedFrame?.timestamp ?? 0, pick: pickKind, pickT: pickT))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)

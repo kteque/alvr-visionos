@@ -94,6 +94,13 @@ func writeReport() {
             func q(_ f: Double) -> Double { ages[min(ages.count - 1, Int(Double(ages.count) * f))] }
             m["win_age_p50_ms"] = q(0.5); m["win_age_p95_ms"] = q(0.95); m["win_age_p99_ms"] = q(0.99); m["win_age_max_ms"] = ages.last!
         }
+        // age of a fresh frame in the queue (decoded -> picked), the field's `fresh frame age in queue`: the latency a margin or a pick policy costs
+        let qages = w.filter { $0.shown == .new }.compactMap { t -> Double? in
+            guard let d = RigFrames.shared.decodedTime(t.frameIndex ?? 0) else { return nil }; return (t.pickT - d) * 1000 }.sorted()
+        if !qages.isEmpty {
+            m["win_queue_age_mean_ms"] = qages.reduce(0, +) / Double(qages.count)
+            m["win_queue_age_p95_ms"] = qages[min(qages.count - 1, Int(Double(qages.count) * 0.95))]
+        }
         // repeats by cause (per 1000 ticks): the pick's result when it had nothing new, and the render thread's missed deadlines (doubled intervals)
         m["win_pick_resubmit_per_1000"] = Double(w.filter { $0.pick == 2 }.count) / wn * 1000
         m["win_pick_reprojected_per_1000"] = Double(w.filter { $0.pick == 3 }.count) / wn * 1000

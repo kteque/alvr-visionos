@@ -259,7 +259,9 @@ final class RigFrames: @unchecked Sendable {
     static let shared = RigFrames()
     private let lock = NSLock()
     private var bytes: [UInt32: Int] = [:]
-    func note(index: UInt32, bytes b: Int) { lock.lock(); bytes[index] = b; lock.unlock() }
+    private var decodedAt: [UInt32: Double] = [:]
+    func note(index: UInt32, bytes b: Int) { lock.lock(); bytes[index] = b; decodedAt[index] = HarnessLog.shared.now(); lock.unlock() }
+    func decodedTime(_ index: UInt32) -> Double? { lock.lock(); defer { lock.unlock() }; return decodedAt[index] }
     func size(_ index: UInt32) -> Int { lock.lock(); defer { lock.unlock() }; return bytes[index] ?? 0 }
     /// frames at or above this size are game content (idle frames are a few hundred bytes)
     static let contentBytes = 8000
