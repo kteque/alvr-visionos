@@ -2242,7 +2242,7 @@ class WorldTracker {
     // TODO: figure out how stable Apple's predictions are into the future
     // targetTimestamp: The timestamp of the pose we will send to ALVR--capped by how far we can predict forward.
     // realTargetTimestamp: The timestamp we tell ALVR, which always includes the full round-trip prediction.
-    static let refetchAlternation = true
+    static let refetchAlternation = false
     var teleTrkSkipped = false
     var teleTrkLast = [Double](repeating: 0, count: 4)
     var teleTrkIters = 0
