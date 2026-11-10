@@ -998,17 +998,20 @@ struct VideoHandler {
 
         refreshRate = EventHandler.effectiveRefreshRate(setting: streamFPS, negotiated: EventHandler.shared.negotiatedRefreshRate, deviceDefault: defaultRefreshRate)
 
-        print("Setting refresh rate preference to:", refreshRate)
+        // The display is asked for 100 Hz when the stream runs at 90: the Vision Pro's 100 Hz mode performed better than 90 Hz in the field
+        // (fewer missed frames, 2026-11-10). The stream rate (refreshRate, used for the thresholds) is unchanged; visionOS still decides.
+        let displayRequest: Float = (refreshRate == 90) ? 100 : refreshRate
+        print("Setting refresh rate preference to:", displayRequest, "(stream", refreshRate, ")")
 
         DispatchQueue.main.async {
-            RefreshRateDisplayLink.shared.apply(refreshRate: refreshRate)
+            RefreshRateDisplayLink.shared.apply(refreshRate: displayRequest)
             // Signal to the display hardware to match our content's refresh rate
             if videoFormat == nil {
                return
             }
             if let window = currentKeyWindow() {
                 let avDisplayManager = window.avDisplayManager
-                avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: refreshRate, formatDescription: videoFormat!)
+                avDisplayManager.preferredDisplayCriteria = AVDisplayCriteria(refreshRate: displayRequest, formatDescription: videoFormat!)
             }
         }
     }
