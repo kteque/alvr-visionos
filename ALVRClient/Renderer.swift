@@ -943,7 +943,7 @@ class Renderer {
         // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread
         let telePickStart = CACurrentMediaTime()
         let telePickDepth = EventHandler.shared.queueDepth()
-        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.005)
+        let telePicked = EventHandler.shared.pollFrameForDisplay(timeout: 0.008)
         let telePickEnd = CACurrentMediaTime()
         let teleOptimalInput = LayerRenderer.Clock.Instant.epoch.duration(to: timing.optimalInputTime).timeInterval
         if streamingActiveForFrame { teleWakeLate.add(telePickStart - teleOptimalInput) }
