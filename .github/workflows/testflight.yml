@@ -258,11 +258,11 @@ jobs:
       GROUP_NAME: ${{ inputs.public_group_name }}
       # Test Information that Beta App Review requires (repository variables, optional: unset = left as it is in App Store Connect)
       BETA_DESCRIPTION: ${{ vars.BETA_DESCRIPTION }}
-      BETA_FEEDBACK_EMAIL: ${{ vars.BETA_FEEDBACK_EMAIL }}
-      BETA_CONTACT_FIRST: ${{ vars.BETA_CONTACT_FIRST }}
-      BETA_CONTACT_LAST: ${{ vars.BETA_CONTACT_LAST }}
-      BETA_CONTACT_PHONE: ${{ vars.BETA_CONTACT_PHONE }}
-      BETA_CONTACT_EMAIL: ${{ vars.BETA_CONTACT_EMAIL }}
+      BETA_FEEDBACK_EMAIL: ${{ secrets.BETA_FEEDBACK_EMAIL }}
+      BETA_CONTACT_FIRST: ${{ secrets.BETA_CONTACT_FIRST }}
+      BETA_CONTACT_LAST: ${{ secrets.BETA_CONTACT_LAST }}
+      BETA_CONTACT_PHONE: ${{ secrets.BETA_CONTACT_PHONE }}
+      BETA_CONTACT_EMAIL: ${{ secrets.BETA_CONTACT_EMAIL }}
     steps:
       - name: Public link
         run: |
