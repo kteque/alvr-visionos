@@ -723,8 +723,8 @@ class Renderer {
             EventHandler.shared.framesRendered -= 1
             isReprojected = true
         case .none:
-            break
         }
+        EventHandler.shared.reportTicksIfDue(streaming: streamingActiveForFrame)
         
         if queuedFrame == nil && streamingActiveForFrame {
             streamingActiveForFrame = false

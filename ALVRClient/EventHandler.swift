@@ -153,6 +153,37 @@ class EventHandler: ObservableObject {
     /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
     static var catchUpPick = false
     var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
+
+    // Display-tick counters for the streamer's "headset repeated" figure (AirFrameXR docs/MEASUREMENT_FIX_LOG.md): one count per render tick
+    // while streaming, what that tick showed. Written by the render thread only (plain integers, no lock, no allocation); the window is
+    // sent as one `va_ticks` line every 10 s through the client log, the same line the Quest client sends. A tick that showed the same frame
+    // again (a resubmit after visionOS skipped one, a reprojected last frame, or nothing) is a "repeat" for the host. Counted in
+    // pollFrameForDisplay, which is the pick of every tick.
+    var tickFresh = 0, tickResubmit = 0, tickReprojected = 0, tickNone = 0
+    var tickWindowStart = 0.0
+    var queueOverflowDrops = 0   // frames the decoder output dropped because the queue was full (written under frameQueueLock)
+    private var tickDropsReported = 0
+
+    /// Render thread, once per tick after the pick: sends the window when 10 s have passed.
+    func reportTicksIfDue(streaming: Bool) {
+        let now = CACurrentMediaTime()
+        if !streaming {
+            tickFresh = 0; tickResubmit = 0; tickReprojected = 0; tickNone = 0; tickWindowStart = 0
+            return
+        }
+        if tickWindowStart == 0 { tickWindowStart = now; return }
+        let dt = now - tickWindowStart
+        if dt < 10 { return }
+        let ticks = tickFresh + tickResubmit + tickReprojected + tickNone
+        objc_sync_enter(frameQueueLock)
+        let drops = queueOverflowDrops + catchUpDrops
+        objc_sync_exit(frameQueueLock)
+        let line = String(format: "va_ticks {\"v\":1,\"client\":\"visionos\",\"t\":%.2f,\"ticks\":%d,\"fresh\":%d,\"resubmit\":%d,\"reprojected\":%d,\"none\":%d,\"drops\":%d}",
+                          dt, ticks, tickFresh, tickResubmit, tickReprojected, tickNone, drops - tickDropsReported)
+        tickDropsReported = drops
+        tickFresh = 0; tickResubmit = 0; tickReprojected = 0; tickNone = 0; tickWindowStart = now
+        line.withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }   // errors are what the client forwards to the streamer's log
+    }
     var frameQueueLastImageBuffer: CVImageBuffer? = nil
     var lastQueuedFrame: QueuedFrame? = nil
     var lastQueuedFramePose: simd_float4x4? = nil
@@ -493,6 +524,7 @@ class EventHandler: ObservableObject {
             // If visionOS skipped our last frame, let the queue fill up a bit
             if let last = lastQueuedFrame, last.timestamp != lastSubmittedTimestamp && frameQueue.count < 2 {
                 objc_sync_exit(frameQueueLock)
+                tickResubmit += 1
                 return .resubmit(last)
             }
             if !frameQueue.isEmpty {
@@ -502,12 +534,14 @@ class EventHandler: ObservableObject {
                 }
                 let f = frameQueue.removeFirst()
                 objc_sync_exit(frameQueueLock)
+                tickFresh += 1
                 return .fresh(f)
             }
             let last = lastQueuedFrame
             objc_sync_exit(frameQueueLock)
             if CACurrentMediaTime() - startPollTime > timeout {
                 // Recycle old frame with old timestamp/anchor (visionOS doesn't do timewarp for us?)
+                if last != nil { tickReprojected += 1 } else { tickNone += 1 }
                 return last.map { .reprojected($0) } ?? .none
             }
         }
@@ -757,6 +791,7 @@ class EventHandler: ObservableObject {
                     }
                     // TODO: make this configurable
                     if frameQueue.count > 2 {
+                        queueOverflowDrops += 1
                         frameQueue.removeFirst()
                     }
 
