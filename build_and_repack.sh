@@ -23,6 +23,9 @@ rm -rf ALVR/target
 rm -rf ALVR/build
 rm -rf ALVR/alvr/server
 
+# client_core changes carried as patches (patches/*.patch)
+bash scripts/apply_core_patches.sh || exit 1
+
 CARGO_TARGET_DIR=ALVR/target cargo build --manifest-path ALVR/Cargo.toml --target=aarch64-apple-ios -p alvr_client_core --profile distribution && \
 mkdir -p ALVR/build && \
 cd ALVR/alvr/client_core && \

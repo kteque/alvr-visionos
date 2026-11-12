@@ -114,6 +114,16 @@ class EventHandler: ObservableObject {
         
     var alvrInitialized = false
     var streamingActive = false
+    /// Set by the UI: leave the immersive space and show the Entry window (the link has been gone for a while).
+    var onLeaveStream: (() -> Void)? = nil
+    /// Seconds without a stream (client_core ended it: dead link, streamer gone) before the client leaves the immersive space for the
+    /// Entry window, to show that something is wrong. Until then it stays where it is: client_core keeps listening and the stream
+    /// resumes by itself when the streamer is back (a blip, a streamer restart, a Wi-Fi roam never throws the wearer out).
+    static let leaveStreamAfter = 60.0
+    /// when the stream ended while the immersive space was open (nil while streaming or outside the space); event thread only
+    var streamLostSince: Double? = nil
+    /// the render loop must end without alvr_pause() or exit(0): this is the app leaving on its own, the core keeps listening
+    var leaveRequested = false
     
     
     @Published var connectionState: ConnectionState = .disconnected
@@ -723,12 +733,14 @@ class EventHandler: ObservableObject {
                 
                 timeLastFrameDecoded = CACurrentMediaTime()
 
+                // Outside frameQueueLock: the call takes client_core's statistics mutex, and the render thread's frame pick
+                // takes frameQueueLock. Reported before the frame is queued, so its compositor start cannot come first.
+                alvr_report_frame_decoded(timestamp)
+
                 objc_sync_enter(frameQueueLock)
                 framesSinceLastDecode = 0
                 if frameQueueLastTimestamp != timestamp || true
                 {
-                    alvr_report_frame_decoded(timestamp)
-                    
                     let dummyPose = AlvrPose()
                     let viewParamsDummy = [AlvrViewParams(pose: dummyPose, fov: viewFovs[0]), AlvrViewParams(pose: dummyPose, fov: viewFovs[1])]
 
@@ -904,6 +916,16 @@ class EventHandler: ObservableObject {
                 if !renderStarted && streamingActive {
                     WorldTracker.shared.sendFakeTracking(viewFovs: viewFovs, targetTimestamp: CACurrentMediaTime() - 1.0)
                 }
+
+                // A dead link must not leave the wearer in a frozen scene (nor end the app): after a grace period go back to the
+                // Entry window. client_core keeps listening, so the streamer is found again by itself and auto-connect re-enters.
+                if renderStarted, !leaveRequested, let lost = streamLostSince, !streamingActive,
+                   CACurrentMediaTime() - lost >= EventHandler.leaveStreamAfter {
+                    leaveRequested = true
+                    streamLostSince = nil
+                    streamLog(String(format: "link lost for %.0f s: leaving the immersive space (the core keeps listening for the streamer)", CACurrentMediaTime() - lost))
+                    if let leave = onLeaveStream { DispatchQueue.main.async { leave() } }
+                }
             }
             
             let diffSinceLastEvent = 0.0//currentTime - timeLastAlvrEvent
@@ -979,6 +1001,7 @@ class EventHandler: ObservableObject {
                 encodingGamma = alvrEvent.STREAMING_STARTED.encoding_gamma
                 negotiatedRefreshRate = alvrEvent.STREAMING_STARTED.refresh_rate_hint
                 enableHdr = alvrEvent.STREAMING_STARTED.enable_hdr
+                streamLostSince = nil
                 if !streamingActive {
                     streamEvent = alvrEvent
                     streamingActive = true
@@ -995,6 +1018,7 @@ class EventHandler: ObservableObject {
                 Settings.clearSettingsCache()
             case ALVR_EVENT_STREAMING_STOPPED.rawValue:
                 print("streaming stopped")
+                if renderStarted && streamLostSince == nil { streamLostSince = CACurrentMediaTime() }
                 if streamingActive {
                     streamingActive = false
                     stop()

@@ -22,9 +22,9 @@ FAILS=0
 printf "%-20s %-8s %6s %6s %6s %6s %5s %s\n" scenario result tail% idr reconn decerr races failures
 for n in "${NAMES[@]}"; do
     if [[ $TSAN == 1 ]]; then
-        TSAN_OPTIONS="log_path=$OUT/$n.tsan halt_on_error=0 report_signal_unsafe=0" timeout 120 "$BIN" run "$n" --out "$OUT" > /dev/null 2>"$OUT/$n.stderr"
+        TSAN_OPTIONS="log_path=$OUT/$n.tsan halt_on_error=0 report_signal_unsafe=0" timeout 150 "$BIN" run "$n" --out "$OUT" > /dev/null 2>"$OUT/$n.stderr"
     else
-        timeout 120 "$BIN" run "$n" --out "$OUT" > /dev/null 2>"$OUT/$n.stderr"
+        timeout 150 "$BIN" run "$n" --out "$OUT" > /dev/null 2>"$OUT/$n.stderr"
     fi
     rc=$?
     races=$(cat "$OUT/$n.tsan".* 2>/dev/null | grep -c "WARNING: ThreadSanitizer: data race" || true)

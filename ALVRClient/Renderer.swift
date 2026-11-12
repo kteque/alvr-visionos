@@ -154,6 +154,7 @@ class Renderer {
     private let chaperoneProfileWindowSize: Int = 120
 #endif
     var reprojectedFramesInARow: Int = 0
+    var commandBufferFailures: Int = 0
     var roundTripRenderTime: Double = 0.0
     var lastRoundTripRenderTimestamp: Double = 0.0
     var currentYuvTransform: simd_float4x4 = matrix_identity_float4x4
@@ -730,8 +731,17 @@ class Renderer {
         }
         let renderingStreaming = streamingActiveForFrame && queuedFrame != nil
         
+        // No command buffer (Metal is out of them or of memory): this frame is skipped the way a missing drawable is below,
+        // it does not end the app.
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            fatalError("Failed to create command buffer")
+            commandBufferFailures += 1
+            if commandBufferFailures == 1 {
+                EventHandler.shared.streamLog("Metal gave no command buffer: frame skipped (reported once)")
+            }
+            if queuedFrame != nil {
+                EventHandler.shared.publishShownFrame(queuedFrame)
+            }
+            return
         }
 
 #if XCODE_BETA_26

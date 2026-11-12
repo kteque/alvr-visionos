@@ -5,7 +5,7 @@ PC runs the game through AirFrameXR's OpenXR runtime (frame generation, foveated
 the ALVR v20 protocol, and this app shows it on the Vision Pro with hand and PlayStation VR2 Sense controller
 tracking.
 
-Version 1.3.9 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
+Version 1.3.10 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
 
 ## Credits
 
@@ -81,6 +81,19 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
 
 Same as upstream: see the [Building](https://github.com/alvr-org/alvr-visionos/wiki/Building) wiki page. The CI
 workflow files show the exact commands (Rust client core, cbindgen, `repack_alvr_client.sh`, then `xcodebuild`).
+
+## 1.3.10
+
+Hardening against a lost or stalled link (AirFrameXR `docs/VISIONOS_CLIENT_HARDENING.md`). Checked in the protocol harness on Linux and,
+for the client_core patch, on the streamer's lab with the mock headset; not yet on a headset. No change to pacing or picture.
+
+- **A lost link no longer leaves a frozen scene.** The client stays in the immersive space and the stream resumes by itself when the
+  streamer is back; after 60 s without a stream (`EventHandler.leaveStreamAfter`) it leaves the space for the Entry window, and
+  auto-connect re-enters when the streamer is found again.
+- **Shorter lock holds between the render thread, the decoder callback and client_core.** `alvr_report_frame_decoded` is called outside
+  `frameQueueLock`, and client_core sends its statistics packet after releasing its statistics mutex
+  (`patches/client_core-statistics-send-outside-lock.patch`, applied to the ALVR submodule by `scripts/apply_core_patches.sh` at build time).
+- **Metal giving no command buffer skips the frame** instead of ending the app.
 
 ## 1.3.9
 

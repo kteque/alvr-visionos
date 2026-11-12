@@ -11,7 +11,7 @@ on:
     inputs:
       marketing_version:
         description: "App version shown in TestFlight (CFBundleShortVersionString)"
-        default: "1.3.9"
+        default: "1.3.10"
       low_latency_streaming:
         description: "Include the low-latency-streaming entitlement (untick if signing complains about it)"
         type: boolean
@@ -101,6 +101,7 @@ jobs:
         run: |
           unset SDKROOT
           rm -rf ALVR/build ALVR/alvr/server
+          bash scripts/apply_core_patches.sh
           CARGO_TARGET_DIR=ALVR/target cargo build --manifest-path ALVR/Cargo.toml \
             --target=aarch64-apple-ios -p alvr_client_core --profile distribution
           mkdir -p ALVR/build

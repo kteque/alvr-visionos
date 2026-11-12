@@ -22,6 +22,14 @@ enum Phase {
     case switchDisplay(hz: Double, stallMs: Double)
     /// the game stops presenting: the host sends nothing (tools/host/src/pipeline.rs: empty boundary left empty)
     case stall(seconds: Double)
+    /// the network stalls (Wi-Fi hiccup): the host keeps encoding at `fps` and sends, but nothing reaches the client for `seconds`,
+    /// then everything held arrives at once (the headset log 2026-11-12: gaps of 4-7 s, then frames 0.3-2 s old, 0 packets lost)
+    case netStall(seconds: Double, fps: Double)
+    /// the link dies for `seconds` (client_core's keepalive ends the stream, the streamer is unreachable), then the streamer is found again
+    case networkLoss(seconds: Double)
+    /// fault injection: the statistics send inside client_core's alvr_report_submit blocks for `seconds` while it holds the statistics mutex
+    /// (what a dead link would do to a blocking send); the host keeps streaming normally
+    case coreBlock(seconds: Double)
     /// irregular presents: gaps drawn uniformly from minMs...maxMs
     case irregular(seconds: Double, minMs: Double, maxMs: Double, poseAgeMs: Double = 30)
     /// the encoder is rebuilt with another size (new parameter sets, same connection)
@@ -58,6 +66,10 @@ struct Scenario {
     var expectClientRateFollowsHint = false
     /// shown-frame age after the last display switch (settled: from 3 s on) must stay under this many ms (0 = not checked)
     var maxSettledAgeMs = 0.0
+    /// link-loss policy: nil = not checked; true = the client must have left the immersive space (once) and come back; false = it must have stayed
+    var expectLeave: Bool? = nil
+    /// the render thread must never wait longer than this between two display ticks (0 = not checked)
+    var maxTickGapMs = 0.0
 }
 
 let game90 = Phase.game(seconds: 6, fps: 90)
@@ -77,6 +89,28 @@ let scenarios: [Scenario] = [
              phases: [game90, .stall(seconds: 35), .game(seconds: 8, fps: 90)]),
     Scenario(name: "choke", about: "the game chokes: 6 fps with 700 ms old poses for 5 s, then recovers",
              phases: [game90, .game(seconds: 5, fps: 6, jitterMs: 40, poseAgeMs: 700), .game(seconds: 8, fps: 90)]),
+    Scenario(name: "net_stall_2s", about: "the network holds every frame for 2 s, then flushes them (host fine, 100 fps)",
+             phases: [game90, .netStall(seconds: 2, fps: 100), game90]),
+    Scenario(name: "net_stall_7s", about: "the network holds every frame for 7 s, then flushes them",
+             phases: [game90, .netStall(seconds: 7, fps: 100), game90]),
+    Scenario(name: "net_stall_storm", about: "five network stalls (0.5-4 s) in 25 s, each flushed as a burst",
+             phases: [game90, .netStall(seconds: 0.5, fps: 100), .game(seconds: 1, fps: 100), .netStall(seconds: 4, fps: 100), .game(seconds: 1, fps: 100),
+                      .netStall(seconds: 1.5, fps: 100), .game(seconds: 0.5, fps: 100), .netStall(seconds: 3, fps: 100), .game(seconds: 1, fps: 100),
+                      .netStall(seconds: 2, fps: 100), game90], displayHz: 100, hintHz: 100),
+    // Link loss: the client must not die. It stays in the immersive space and the stream resumes by itself when the streamer is back;
+    // only after EventHandler.leaveStreamAfter (60 s) without a stream does it go to the Entry window (the core keeps listening, auto-connect re-enters).
+    Scenario(name: "loss_3s", about: "the link dies for 3 s: the client stays in the immersive space and the stream resumes",
+             phases: [game90, .networkLoss(seconds: 3), .game(seconds: 8, fps: 90)], expectLeave: false),
+    Scenario(name: "loss_25s", about: "the link dies for 25 s: still in the immersive space, the stream resumes",
+             phases: [game90, .networkLoss(seconds: 25), .game(seconds: 8, fps: 90)], expectLeave: false),
+    Scenario(name: "loss_flap", about: "the link flaps: 2 s up, 35 s down, three times: never leaves (each return resets the timer)",
+             phases: [game90, .networkLoss(seconds: 35), .game(seconds: 2, fps: 90), .networkLoss(seconds: 35), .game(seconds: 2, fps: 90),
+                      .networkLoss(seconds: 35), .game(seconds: 8, fps: 90)], expectLeave: false),
+    Scenario(name: "loss_75s", about: "the link dies for 75 s: the client leaves the immersive space after 60 s, re-enters when the streamer is back",
+             phases: [game90, .networkLoss(seconds: 75), .game(seconds: 8, fps: 90)], expectLeave: true),
+    // Fault injection: a core call that blocks while it holds client_core's statistics mutex (see docs/VISIONOS_CLIENT_HARDENING.md, finding F1)
+    Scenario(name: "core_block_2s", about: "alvr_report_submit blocks 2 s under the core's statistics mutex: the render thread must keep ticking",
+             phases: [game90, .coreBlock(seconds: 2), .game(seconds: 6, fps: 90)], maxTickGapMs: 100),
     Scenario(name: "irregular", about: "irregular cadence, 8-90 ms gaps for 15 s",
              phases: [game90, .irregular(seconds: 15, minMs: 8, maxMs: 90), .game(seconds: 6, fps: 90)]),
     Scenario(name: "reconfigure", about: "the encoder is rebuilt with a new size mid-stream",
@@ -177,6 +211,35 @@ final class Host: @unchecked Sendable {
                 if at > now { sleep(at - now) }
                 sendFrame(poseAgeMs: age)
             }
+        case .netStall(let s, let fps):
+            HarnessLog.shared.event("phase", ["kind": "net_stall", "s": "\(s)", "fps": "\(fps)"])
+            if FakeCore.shared.conn == .idle { FakeCore.shared.startStreaming() }
+            let core = FakeCore.shared
+            var held: [HostFrame] = []
+            let t0 = CACurrentMediaTime()
+            var k = 0.0
+            while CACurrentMediaTime() - t0 < s {
+                let at = t0 + k / fps; k += 1
+                let now = CACurrentMediaTime()
+                if at > now { sleep(at - now) }
+                let isIdr = core.takeIdrRequest()
+                if isIdr && frameIndex > 0 { core.sendDecoderConfig() }
+                let stamp = core.newestTracking(olderThan: 0.03) ?? UInt64(CACurrentMediaTime() * 1e9)
+                core.lock.lock(); let cfg = core.configId; core.lock.unlock()
+                frameIndex &+= 1
+                DisplaySim.shared.noteSent(frameIndex)
+                held.append(HostFrame(index: frameIndex, timestamp: stamp, isIdr: isIdr, configId: cfg, lossBefore: false))
+            }
+            for f in held { core.deliver(f); usleep(300) }   // the burst: a line-rate flush, 0.3 ms apart
+        case .networkLoss(let s):
+            HarnessLog.shared.event("phase", ["kind": "network_loss", "s": "\(s)"])
+            FakeCore.shared.stopStreaming("network_lost")
+            sleep(s)
+            FakeCore.shared.startStreaming()
+        case .coreBlock(let s):
+            HarnessLog.shared.event("phase", ["kind": "core_block", "s": "\(s)"])
+            coreBlockUntil = CACurrentMediaTime() + s
+            cadence(seconds: s + 0.5, gap: { 1.0 / 90 }, poseAgeMs: 30)
         case .irregular(let s, let lo, let hi, let age):
             HarnessLog.shared.event("phase", ["kind": "irregular", "s": "\(s)"])
             cadence(seconds: s, gap: { Double.random(in: lo...hi) / 1000 }, poseAgeMs: age)
@@ -306,6 +369,21 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
     if Int(m["reconnects"] ?? 0) < sc.minReconnects {
         fails.append("the client did not reconnect although its decoder never recovered")
     }
+    do {
+        var worstGap = 0.0, prev: Double? = nil
+        for t in ticks { if let p = prev { worstGap = max(worstGap, (t.t - p) * 1000) }; prev = t.t }
+        m["max_tick_gap_ms"] = worstGap
+        if sc.maxTickGapMs > 0 && worstGap > sc.maxTickGapMs {
+            fails.append(String(format: "the render thread waited %.0f ms between two display ticks (want <= %.0f ms)", worstGap, sc.maxTickGapMs))
+        }
+    }
+    if let want = sc.expectLeave {
+        let left = Int(HarnessStats.shared.get("ui_left_immersive"))
+        m["ui_left_immersive"] = Double(left)
+        if want && left < 1 { fails.append("the link was lost for a long time and the client never left the immersive space") }
+        if !want && left > 0 { fails.append("a short link loss made the client leave the immersive space") }
+        if want && !EventHandler.shared.renderStarted { fails.append("the client did not come back into the stream after the link returned") }
+    }
     if sc.expectExit {
         fails.append("the client did not exit although the app stayed in the background")
     }
@@ -358,6 +436,25 @@ HarnessLog.shared.onFinish = {
 
 // ALVRClientApp.swift:128-130 (scene active): initialise the core, start the event thread
 if ProcessInfo.processInfo.environment["HARNESS_OLD_PICK"] == "1" { EventHandler.catchUpPick = false }   // the pick before the catch-up rule
+// The SwiftUI side (ALVRClientApp / EntryControls), modelled: leaving dismisses the immersive space and shows the Entry window;
+// with auto-connect on, the next connected state (the streamer is found again) opens the immersive space.
+EventHandler.shared.onLeaveStream = {
+    HarnessStats.shared.count("ui_left_immersive")
+    HarnessLog.shared.event("ui_left_immersive")
+    EventHandler.shared.renderStarted = false      // MetalClientSystem: the layer is invalidated, the loop ends
+    DisplaySim.shared.stop()
+    Thread { // auto-connect, the edge disconnected -> connected
+        while true {
+            usleep(100_000)
+            if EventHandler.shared.connectionState == .connected && !EventHandler.shared.renderStarted {
+                usleep(800_000)  // openImmersiveSpace
+                HarnessLog.shared.event("ui_entered_immersive")
+                DisplaySim.shared.start()
+                return
+            }
+        }
+    }.start()
+}
 EventHandler.shared.initializeAlvr()
 EventHandler.shared.start()
 

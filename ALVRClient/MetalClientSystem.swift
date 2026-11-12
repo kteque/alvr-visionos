@@ -62,7 +62,16 @@ class MetalClientSystem {
         EventHandler.shared.handleHeadsetRemovedOrReentry()
         let timeSinceLastLoop = CACurrentMediaTime()
         while EventHandler.shared.renderStarted {
-            if layerRenderer.state == .invalidated {
+            if layerRenderer.state == .invalidated && EventHandler.shared.leaveRequested {
+                // the app left the space itself (link lost): no alvr_pause, no exit(0), the Entry window is back
+                print("Layer is invalidated: left on a lost link")
+                EventHandler.shared.handleHeadsetRemovedOrReentry()
+                EventHandler.shared.handleHeadsetRemoved()
+                WorldTracker.shared.resetPlayspace()
+                EventHandler.shared.renderStarted = false
+                EventHandler.shared.leaveRequested = false
+                break
+            } else if layerRenderer.state == .invalidated {
                 print("Layer is invalidated")
                 //EventHandler.shared.stop()
                 EventHandler.shared.handleHeadsetRemovedOrReentry()

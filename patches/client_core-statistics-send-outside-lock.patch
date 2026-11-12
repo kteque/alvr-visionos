@@ -1,0 +1,29 @@
+diff --git a/alvr/client_core/src/lib.rs b/alvr/client_core/src/lib.rs
+index 279d999..e3fca13 100644
+--- a/alvr/client_core/src/lib.rs
++++ b/alvr/client_core/src/lib.rs
+@@ -393,11 +393,21 @@ impl ClientCoreContext {
+     pub fn report_submit(&self, timestamp: Duration, vsync_queue: Duration) {
+         dbg_client_core!("report_submit");
+ 
+-        if let Some(stats) = &mut *self.connection_context.statistics_manager.lock() {
+-            stats.report_submit(timestamp, vsync_queue);
++        // AirFrameXR: the statistics mutex is released before the packet is sent. report_frame_decoded,
++        // report_compositor_start (the client's render thread) and send_tracking take the same mutex: a send that
++        // waits on the socket must not make them wait too.
++        let summary =
++            if let Some(stats) = &mut *self.connection_context.statistics_manager.lock() {
++                stats.report_submit(timestamp, vsync_queue);
++
++                Some(stats.summary(timestamp))
++            } else {
++                None
++            };
+ 
++        if let Some(summary) = summary {
+             if let Some(sender) = &mut *self.connection_context.statistics_sender.lock() {
+-                if let Some(stats) = stats.summary(timestamp) {
++                if let Some(stats) = summary {
+                     sender.send_header(&stats).ok();
+                 } else {
+                     warn!("Statistics summary not ready!");

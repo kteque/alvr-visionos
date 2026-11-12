@@ -44,6 +44,7 @@ struct ALVRClientApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) var openWindow
     @Environment(\.dismissWindow) var dismissWindow
+    @Environment(\.dismissImmersiveSpace) var dismissImmersiveSpace
     static var gStore = GlobalSettingsStore()
     // Triggers body re-evaluation, and the .upper​Limb​Visibility modifiers will pick up the new show​Hands​Overlaid or progressive value live
     @ObservedObject private var observedGStore = ALVRClientApp.gStore
@@ -125,8 +126,21 @@ struct ALVRClientApp: App {
             }
             .task {
                 model.isShowingClient = false
+                // The link was lost for a while (EventHandler.leaveStreamAfter): back to this window instead of a frozen scene or a
+                // dead app. client_core keeps listening, the streamer reconnects by itself, and auto-connect (if on) re-enters.
+                EventHandler.shared.onLeaveStream = {
+                    Task { @MainActor in
+                        model.isShowingClient = false
+                        await dismissImmersiveSpace()
+                        openWindow(id: "Entry")
+                    }
+                }
                 EventHandler.shared.initializeAlvr()
-                await WorldTracker.shared.initializeAr()
+                // This task runs every time the Entry window appears, including when the app brings it back after a lost link:
+                // the ARKit session is only (re)started when it is not running (initializeAr holds an objc_sync lock across an await).
+                if !WorldTracker.shared.arRunning {
+                    await WorldTracker.shared.initializeAr()
+                }
                 EventHandler.shared.start()
             }
             .environment(model)

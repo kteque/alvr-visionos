@@ -377,15 +377,29 @@ private func writeCString(_ s: String, _ buf: UnsafeMutablePointer<CChar>?) -> U
     c.requestIdr("callback_installed")
 }
 
+/// client_core's statistics_manager mutex (lib.rs: report_frame_decoded, report_compositor_start, report_submit, send_tracking all take it).
+/// `coreBlockUntil` models report_submit's statistics send blocking (a dead link). Stock v20.14.1 sends while it holds the mutex
+/// (HARNESS_CORE_STOCK=1); with patches/client_core-statistics-send-outside-lock.patch, which the app build applies, the mutex is
+/// released first (the default here). This file is a model: it does not show that the patched Rust code behaves so.
+let coreStatsLock = NSLock()
+let coreStock = ProcessInfo.processInfo.environment["HARNESS_CORE_STOCK"] == "1"
+nonisolated(unsafe) var coreBlockUntil = 0.0
+func coreStatsBlockIfInjected() {
+    let left = coreBlockUntil - CACurrentMediaTime()
+    if left > 0 { usleep(UInt32(left * 1e6)) }
+}
 @_cdecl("alvr_report_frame_decoded") func h_alvr_report_frame_decoded(_ ts: UInt64) {
     let c = FakeCore.shared
+    coreStatsLock.lock()
     c.lock.lock(); c.framesDecodedReported += 1; c.lock.unlock()
+    coreStatsLock.unlock()
 }
 @_cdecl("alvr_report_fatal_decoder_error") func h_alvr_report_fatal_decoder_error(_ message: UnsafePointer<CChar>?) {
     FakeCore.shared.fatal(message.map { String(cString: $0) } ?? "")
 }
 @_cdecl("alvr_report_compositor_start") func h_alvr_report_compositor_start(_ ts: UInt64, _ out: UnsafeMutablePointer<AlvrViewParams>?) {
     let c = FakeCore.shared
+    coreStatsLock.lock(); defer { coreStatsLock.unlock() }
     c.lock.lock(); c.compositorStarts += 1; c.lock.unlock()
     if let out {
         out[0] = AlvrViewParams()
@@ -394,7 +408,11 @@ private func writeCString(_ s: String, _ buf: UnsafeMutablePointer<CChar>?) -> U
 }
 @_cdecl("alvr_report_submit") func h_alvr_report_submit(_ ts: UInt64, _ vsyncQueue: UInt64) {
     let c = FakeCore.shared
+    coreStatsLock.lock()
     c.lock.lock(); c.submits += 1; c.lastSubmitTs = ts; c.lock.unlock()
+    if coreStock { coreStatsBlockIfInjected() }   // stock: statistics_sender.send_header under the statistics_manager lock
+    coreStatsLock.unlock()
+    if !coreStock { coreStatsBlockIfInjected() }  // patched: the send happens after the mutex is released
 }
 
 @_cdecl("alvr_send_battery") func h_alvr_send_battery(_ id: UInt64, _ g: Float, _ p: Bool) {}
@@ -406,6 +424,7 @@ private func writeCString(_ s: String, _ buf: UnsafeMutablePointer<CChar>?) -> U
 
 private func recordTracking(_ ts: UInt64) {
     let c = FakeCore.shared
+    coreStatsLock.lock(); coreStatsLock.unlock()   // send_tracking reads the pipeline latency under the same mutex
     c.lock.lock()
     c.tracking.append((HarnessLog.shared.now(), ts))
     if c.tracking.count > 4096 { c.tracking.removeFirst(c.tracking.count - 2048) }

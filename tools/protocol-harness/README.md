@@ -12,6 +12,10 @@ build/protocol_harness list
 build/protocol_harness run <name> --out DIR [--echo]
 ```
 
+`HARNESS_CORE_STOCK=1` models stock client_core, which sends the statistics packet while it holds its statistics mutex
+(`core_block_2s` then fails: the render thread waits behind it). The default models the core as the app builds it, with
+`patches/client_core-statistics-send-outside-lock.patch`. Both are models in `FakeCore.swift`: the harness does not run the Rust code.
+
 From the AirFrameXR repository: `python3 harness/stability/run_stability.py client [--tsan] [name...]`.
 
 Toolchain: Swift 6.x for Linux from swift.org. The Ubuntu 24.04 tarball works on Arch once `libncurses.so.6` points at
