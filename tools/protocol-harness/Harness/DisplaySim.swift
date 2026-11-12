@@ -17,7 +17,7 @@ final class DisplaySim: @unchecked Sendable {
 
     // what the wearer saw, one entry per display tick
     enum Shown { case blank, new, repeated }
-    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double? }
+    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double?; let depth: Int }   // depth: decoded frames waiting when the tick picked
     let lock = NSLock()
     var ticks: [Tick] = []
     // when the host sent each frame (frame age at the display tick = tick time - this)
@@ -84,6 +84,7 @@ final class DisplaySim: @unchecked Sendable {
         var queuedFrame: QueuedFrame? = nil
 
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
+        objc_sync_enter(eh.frameQueueLock); let depthAtPick = eh.frameQueue.count; objc_sync_exit(eh.frameQueueLock)
         let pickStart = CACurrentMediaTime()
         let pick = eh.pollFrameForDisplay(timeout: 0.005)
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
@@ -165,7 +166,7 @@ final class DisplaySim: @unchecked Sendable {
         let nowT = HarnessLog.shared.now()
         var ageMs: Double? = nil
         if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
-        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs))
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, depth: depthAtPick))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)

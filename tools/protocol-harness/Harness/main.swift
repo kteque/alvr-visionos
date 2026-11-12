@@ -65,7 +65,11 @@ struct Scenario {
     /// the client's refresh rate after the stream started must equal the negotiated one (hintHz)
     var expectClientRateFollowsHint = false
     /// shown-frame age after the last display switch (settled: from 3 s on) must stay under this many ms (0 = not checked)
-    var maxSettledAgeMs = 0.0
+    /// display switches: after the first switch the picture is never stuck (ticks without a new frame in a row) for more than this many ticks (0 = not checked), and from 3 s on at most this share of
+    /// the ticks repeats. The AGE of the frames is recorded (age_*, depth_*) but not asserted: it is the phase between the scripted stream and the display ticks plus a standing second frame in
+    /// the queue (the shipped pick does not drop frames, so a queue of 2 never drains while the stream rate equals the display rate); the real host's phase lock removes that, this streamer has none.
+    var maxPostSwitchStuckTicks = 0
+    var maxPostSwitchRepeatFraction = 0.0
     /// link-loss policy: nil = not checked; true = the client must have left the immersive space (once) and come back; false = it must have stayed
     var expectLeave: Bool? = nil
     /// the render thread must never wait longer than this between two display ticks (0 = not checked)
@@ -149,20 +153,20 @@ let scenarios: [Scenario] = [
     // Display rate switches (the system decides) with a render-thread stall. The host follows the headset: a second stream phase at the new rate.
     Scenario(name: "sw_100_90_s80", about: "100 -> 90 Hz with an 80 ms render stall, the host follows at once (paced 100 then 90 fps)",
              phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 80), .stream(seconds: 12, fps: 90, arrivalJitterMs: 0.5)],
-             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+             displayHz: 100, hintHz: 100, maxPostSwitchStuckTicks: 3, maxPostSwitchRepeatFraction: 0.02),
     Scenario(name: "sw_100_90_lag1s", about: "100 -> 90 Hz with an 80 ms stall, the host keeps 100 fps for 1 s before following",
              phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 80), .stream(seconds: 1, fps: 100, arrivalJitterMs: 0.5), .stream(seconds: 11, fps: 90, arrivalJitterMs: 0.5)],
-             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+             displayHz: 100, hintHz: 100, maxPostSwitchStuckTicks: 3, maxPostSwitchRepeatFraction: 0.02),
     Scenario(name: "sw_90_100_s80", about: "90 -> 100 Hz with an 80 ms stall, the host follows at once",
              phases: [game90, .stream(seconds: 8, fps: 90, arrivalJitterMs: 0.5), .switchDisplay(hz: 100, stallMs: 80), .stream(seconds: 12, fps: 100, arrivalJitterMs: 0.5)],
-             displayHz: 90, hintHz: 90, maxSettledAgeMs: 14),
+             displayHz: 90, hintHz: 90, maxPostSwitchStuckTicks: 3, maxPostSwitchRepeatFraction: 0.02),
     Scenario(name: "sw_100_96_s40", about: "100 -> 96 Hz with a 40 ms stall",
              phases: [game90, .stream(seconds: 8, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 96, stallMs: 40), .stream(seconds: 12, fps: 96, arrivalJitterMs: 0.5)],
-             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+             displayHz: 100, hintHz: 100, maxPostSwitchStuckTicks: 3, maxPostSwitchRepeatFraction: 0.02),
     Scenario(name: "sw_rapid", about: "100 -> 90 -> 100 -> 96 within 6 s with stalls, the host follows each",
              phases: [game90, .stream(seconds: 6, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 90, stallMs: 60), .stream(seconds: 2, fps: 90, arrivalJitterMs: 0.5),
                       .switchDisplay(hz: 100, stallMs: 60), .stream(seconds: 2, fps: 100, arrivalJitterMs: 0.5), .switchDisplay(hz: 96, stallMs: 40), .stream(seconds: 12, fps: 96, arrivalJitterMs: 0.5)],
-             displayHz: 100, hintHz: 100, maxSettledAgeMs: 14),
+             displayHz: 100, hintHz: 100, maxPostSwitchStuckTicks: 3, maxPostSwitchRepeatFraction: 0.02),
     Scenario(name: "background_real", about: "the wearer leaves the app: background for 3 s (the client must exit)",
              phases: [game90, .background(seconds: 3), game90], expectExit: true),
 ]
@@ -331,6 +335,13 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
         m[key + "_mean"] = a.reduce(0, +) / Double(a.count)
         m[key + "_p95"] = a[min(a.count - 1, Int(Double(a.count) * 0.95))]
     }
+    // the queue behind the age: how many decoded frames were waiting at each pick (a standing second frame is one more frame period of age, whatever the phase between the stream and the ticks)
+    func depthStats(_ from: Double, _ to: Double, _ key: String) {
+        let d = ticks.filter { $0.t >= from && $0.t < to && $0.shown != .blank }.map { $0.depth }
+        if d.isEmpty { return }
+        m[key + "_mean"] = Double(d.reduce(0, +)) / Double(d.count)
+        m[key + "_ge2"] = Double(d.filter { $0 >= 2 }.count) / Double(d.count)
+    }
     ageStats(settleFrom, end, "age_tail")
     ds.lock.lock(); let sw = ds.switchTimes; ds.lock.unlock()
     if let first = sw.first {
@@ -338,10 +349,23 @@ func evaluate(_ sc: Scenario, lastPhaseStart: Double, end: Double) -> Verdict {
         ageStats(first, first + 1, "age_0_1s")
         ageStats(first + 1, first + 3, "age_1_3s")
         ageStats(first + 3, end, "age_settled")
+        // what the client itself owns after a display switch (the age is the host's phase against the ticks, see the scenarios): how long the picture stays stuck after the switch's stall,
+        // and how often a tick has to repeat once things have settled
+        var runAfter = 0, worstAfter = 0
+        for t in ticks where t.t >= first { if t.shown == .new { runAfter = 0 } else { runAfter += 1; worstAfter = max(worstAfter, runAfter) } }
+        m["post_switch_worst_not_new_run_ticks"] = Double(worstAfter)
+        let settledTicks = ticks.filter { $0.t >= first + 3 && $0.shown != .blank }
+        if !settledTicks.isEmpty { m["post_switch_repeated_frac"] = Double(settledTicks.filter { $0.shown == .repeated }.count) / Double(settledTicks.count) }
+        depthStats(first - 5, first - 0.5, "depth_before")
+        depthStats(first + 1, first + 3, "depth_1_3s")
+        depthStats(first + 3, end, "depth_settled")
         m["picked_catchup_drops"] = Double(EventHandler.shared.catchUpDrops)
     }
-    if sc.maxSettledAgeMs > 0, let a = m["age_settled_mean"], a > sc.maxSettledAgeMs {
-        fails.append(String(format: "frames shown after the switch are %.1f ms old on average (want <= %.1f ms)", a, sc.maxSettledAgeMs))
+    if sc.maxPostSwitchStuckTicks > 0, let w = m["post_switch_worst_not_new_run_ticks"], Int(w) > sc.maxPostSwitchStuckTicks {
+        fails.append("after the display switch the picture was stuck for \(Int(w)) ticks in a row (want <= \(sc.maxPostSwitchStuckTicks))")
+    }
+    if sc.maxPostSwitchRepeatFraction > 0, let r = m["post_switch_repeated_frac"], r > sc.maxPostSwitchRepeatFraction {
+        fails.append(String(format: "%.1f %% of the ticks repeated after the display switch had settled (want <= %.1f %%)", r * 100, sc.maxPostSwitchRepeatFraction * 100))
     }
     core.lock.lock()
     m["idr_requests"] = Double(core.idrRequestTimes.count)
@@ -435,7 +459,8 @@ HarnessLog.shared.onFinish = {
 }
 
 // ALVRClientApp.swift:128-130 (scene active): initialise the core, start the event thread
-if ProcessInfo.processInfo.environment["HARNESS_OLD_PICK"] == "1" { EventHandler.catchUpPick = false }   // the pick before the catch-up rule
+if ProcessInfo.processInfo.environment["HARNESS_OLD_PICK"] == "1" { EventHandler.catchUpPick = false }
+if ProcessInfo.processInfo.environment["HARNESS_CATCHUP_PICK"] == "1" { EventHandler.catchUpPick = true }   // the catch-up rule on, for comparison with the shipped pick (off)   // the pick before the catch-up rule
 // The SwiftUI side (ALVRClientApp / EntryControls), modelled: leaving dismisses the immersive space and shows the Entry window;
 // with auto-connect on, the next connected state (the streamer is found again) opens the immersive space.
 EventHandler.shared.onLeaveStream = {
