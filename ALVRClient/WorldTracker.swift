@@ -892,16 +892,15 @@ class WorldTracker {
     }
 
     /// The vertical shift for the game: only the user's floor height offset, added to whatever the headset reports.
-    /// The head height is logged and shown in the Entry window (next launch) so the user can judge whether it is needed.
+    /// The head height is shown in the Entry window (next launch) so the user can judge whether it is needed.
     func floorShift(headY: Float) -> Float {
         let settings = ALVRClientApp.gStore.settings
         let shift = Float(settings.heightOffsetCm) / 100.0
         let now = CACurrentMediaTime()
         if now - lastFloorLogTime > 2.0 {
             lastFloorLogTime = now
-            let floorText = detectedFloorY.map { String(format: "%.2f", $0) } ?? "none"
-            let line = String(format: "[floor] head y %.2f floor y %@ (head above floor %@) offset %d cm", headY, floorText, detectedFloorY.map { String(format: "%.2f", headY - $0) } ?? "-", settings.heightOffsetCm)
-            line.withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+            // Only the Entry window reads this (next launch). It used to be sent to the streamer's log every 2 s as well:
+            // nothing read it there and it was 86 % of AirFrameXR.log (field log 2026-11-12), so it is not sent.
             Task { @MainActor in FloorReadout.shared.record(headY: headY) }
         }
         return shift

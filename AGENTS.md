@@ -42,7 +42,7 @@ Repository Guidelines
   `docs/FOV_CLIENT_CEILING.md`).
 - No hand input: hands never reach the game (no pinch, no hand-as-controller pose, no skeleton, since 1.3.1; users got random commands
   from the pinch). Do not bring it back. ARKit's `HandTrackingProvider` stays running only so the Steam Controller pose can be fused from the
-  hands holding it. Debug lines go to the streamer's log through `alvr_log` (`[home]`, `[floor]`, `[stream]` tags); remove them before a release.
+  hands holding it. Debug lines go to the streamer's log through `alvr_log` (`[home]`, `[stream]` tags; `[floor]` is no longer sent: the Entry window has the value); remove them before a release.
 - Chroma key: with a key on, the render pass clears transparent and `videoFrameBorderVertexShader` draws a ring around the declared frame whose
   alpha is the key mask of the frame's edge texel (black where the edge is picture, transparent where it is the key colour); without a key the
   clear is opaque black and no ring is drawn. Keyed pixels are written as premultiplied zero (the video pipeline does not blend); never bring
