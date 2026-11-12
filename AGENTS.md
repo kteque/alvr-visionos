@@ -59,3 +59,5 @@ Repository Guidelines
   `markSubmitted`. `[stream]` lines (`EventHandler.streamLog`) are rare transition events for the streamer's log, not per frame.
 - client_core changes are carried as patches on the ALVR submodule (`patches/*.patch`, applied by `scripts/apply_core_patches.sh`
   from `build_and_repack.sh` and both workflows), not as a fork of ALVR. Keep each one small and say why in the patch itself.
+- `docs/ARCHITECTURE.md` describes the app at run time (threads, the path of a frame, the client's own rules, locks, what the fork
+  changed). Update it with any change to those; `README.md` carries the per-version history.

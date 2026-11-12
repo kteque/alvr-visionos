@@ -7,6 +7,9 @@ tracking.
 
 Version 1.3.10 (numbered with the AirFrameXR streamer it pairs with). Nearly feature complete; what is left is listed at the end.
 
+How the app works inside (threads, the path of a frame, the client's own rules, what this fork changed and where):
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## Credits
 
 This app is a fork of [ALVR for Apple visionOS](https://github.com/alvr-org/alvr-visionos), written by
@@ -18,7 +21,8 @@ licensed and so is this fork (see `LICENSE`).
 
 ## What this fork adds
 
-Everything below is in the `airframexr-client` branch on top of upstream `main`.
+Everything below is in the release branch on top of upstream `main` (`airframexr-client` up to 1.3.9; 1.3.10 is on the branch
+`1.3.10` until it is merged).
 
 **Picture**
 
@@ -41,6 +45,15 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
   set once, on the PC. Keyed pixels are written transparent and everything the frame does not cover is black:
   you see the room between games (the streamer's idle colour) and around the desktop mirror's screen (its
   background is that colour), never past the frame's edge, and a game, which paints its own picture, is opaque.
+
+**Staying up**
+
+- Stream transitions do not take the app down: a game that loads for a long time, a streamer that rebuilds its encoder, a decoder
+  that stops giving pictures, a short "background" report from visionOS (1.3.1).
+- A lost link does not either: the app stays in the immersive space and the stream resumes by itself; after 60 s without a stream it
+  goes back to its window, and auto-connect re-enters when the streamer is back (1.3.10).
+- The render thread, the decoder and ALVR's client core share less: one lock for the shared stream state (1.3.1), no core call inside
+  it, and the core sends its statistics outside its own lock (1.3.10).
 
 **Space**
 
@@ -76,16 +89,22 @@ Everything below is in the `airframexr-client` branch on top of upstream `main`.
   created" input deletes the ones made through the API before signing.
 - The ReplayKit eye-broadcast extension and the app group are removed, so a plain developer account suffices.
 - Export compliance is declared in `Info.plist` (the stream is unencrypted by design).
+- Changes to ALVR's client core are carried as patches (`patches/*.patch`, applied by `scripts/apply_core_patches.sh` before the
+  core is built), not as a fork of ALVR.
+- A protocol harness (`tools/protocol-harness/`) runs the app's own `EventHandler.swift` on Linux against a scripted streamer:
+  37 scenarios (transitions, stalls, link loss, pacing), ThreadSanitizer as an option.
 
 ## Building
 
 Same as upstream: see the [Building](https://github.com/alvr-org/alvr-visionos/wiki/Building) wiki page. The CI
-workflow files show the exact commands (Rust client core, cbindgen, `repack_alvr_client.sh`, then `xcodebuild`).
+workflow files show the exact commands (`scripts/apply_core_patches.sh`, Rust client core, cbindgen, `repack_alvr_client.sh`, then
+`xcodebuild`). `build_and_repack.sh` does the first four on a Mac.
 
 ## 1.3.10
 
-Hardening against a lost or stalled link (AirFrameXR `docs/VISIONOS_CLIENT_HARDENING.md`). Checked in the protocol harness on Linux and,
-for the client_core patch, on the streamer's lab with the mock headset; not yet on a headset. No change to pacing or picture.
+Hardening against a lost or stalled link (AirFrameXR `docs/VISIONOS_CLIENT_HARDENING.md`). TestFlight build 71 (2026-11-12). Checked in
+the protocol harness on Linux and, for the client_core patch, on the streamer's lab with the mock headset; **not yet tried on a
+headset**. No change to pacing or picture.
 
 - **A lost link no longer leaves a frozen scene.** The client stays in the immersive space and the stream resumes by itself when the
   streamer is back; after 60 s without a stream (`EventHandler.leaveStreamAfter`) it leaves the space for the Entry window, and
@@ -244,10 +263,8 @@ calibration-related is set on the headset.
 
 ## Next
 
+- 1.3.10 on a headset: a link loss shorter and longer than 60 s, and a normal session.
 - The wearer's rectangle declared by the client itself, on the streamer's order (a host-to-client message on the
   v20 protocol's reserved packet): the stream frame could then cover only the rectangle, which the AirFrameXR
-  measurements put at 30 % fewer encoded pixels on a full-frame stream. Until then the ceiling is what the stream
-  covers.
-- The field-of-view sweep drawn by the client itself, with the pinch read from hand tracking, if the streamed
-  sweep (`tools/fov_calibration_bundle` in the AirFrameXR repository) proves too dependent on the hand staying in
-  the cameras' view.
+  measurements put at 30 % fewer encoded pixels on a full-frame stream. Until then the stream covers the
+  compositor's whole frustum (or what the FoV sliders make of it).
