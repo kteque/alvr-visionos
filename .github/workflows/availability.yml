@@ -3,6 +3,8 @@ name: Availability
 # Reads (and with "fix" ticked, corrects) the App Store territory availability of the app. Run by hand.
 
 on:
+  push:
+    branches: [availability]
   workflow_dispatch:
     inputs:
       fix:
@@ -22,7 +24,7 @@ jobs:
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
       BUNDLE_ID: ${{ vars.BUNDLE_ID }}
-      FIX: ${{ inputs.fix && '1' || '0' }}
+      FIX: ${{ (inputs.fix && '1') || '0' }}
     steps:
       - name: Availability
         run: |
