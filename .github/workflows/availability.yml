@@ -1,0 +1,58 @@
+name: Availability
+
+# Reads (and with "fix" ticked, corrects) the App Store territory availability of the app. Run by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix:
+        description: "Force CHN, KOR, VNM, RUS to unavailable"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  availability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+      FIX: ${{ inputs.fix && '1' || '0' }}
+    steps:
+      - name: Availability
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyjwt cryptography requests
+          python3 - <<'PY'
+          import os, time, jwt, requests
+          tok = jwt.encode({"iss": os.environ["ASC_ISSUER_ID"], "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"}, os.environ["ASC_KEY_P8"], algorithm="ES256", headers={"kid": os.environ["ASC_KEY_ID"]})
+          H = {"Authorization": "Bearer " + tok, "Content-Type": "application/json"}
+          B = "https://api.appstoreconnect.apple.com"
+          def get(u):
+              r = requests.get(u if u.startswith("http") else B + u, headers=H); print("GET", u[:90], r.status_code)
+              if r.status_code != 200: print(r.text[:600])
+              return r.json() if r.status_code == 200 else None
+          aid = get("/v1/apps?filter[bundleId]=" + os.environ["BUNDLE_ID"])["data"][0]["id"]
+          print("app", aid)
+          url = f"/v2/appAvailabilities/{aid}/territoryAvailabilities?include=territory&limit=200"
+          rows = []
+          while url:
+              p = get(url)
+              if not p: break
+              for ta in p["data"]:
+                  rows.append((ta["id"], ta["relationships"]["territory"]["data"]["id"], ta["attributes"]))
+              url = p.get("links", {}).get("next")
+          print("territories listed:", len(rows))
+          for i, t, a in rows:
+              if t in ("CHN", "KOR", "VNM", "RUS"): print("  ", t, a)
+          print("available:", sum(1 for r in rows if r[2].get("available")), "unavailable:", sorted(r[1] for r in rows if not r[2].get("available")))
+          if os.environ["FIX"] == "1":
+              for i, t, a in rows:
+                  if t in ("CHN", "KOR", "VNM", "RUS") and a.get("available") is not False:
+                      r = requests.patch(f"{B}/v1/territoryAvailabilities/{i}", headers=H, json={"data": {"type": "territoryAvailabilities", "id": i, "attributes": {"available": False}}})
+                      print("PATCH", t, r.status_code, r.text[:400])
+          PY
