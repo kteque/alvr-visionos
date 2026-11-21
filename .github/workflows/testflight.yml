@@ -36,6 +36,9 @@ on:
       expire_versions:
         description: "Marketing versions whose builds are expired in TestFlight, separated by ',' (e.g. 1.4). Only this runs: no build. Then the newest valid build of marketing_version (or existing_build) is added to the internal groups, and the builds testers can install are listed"
         default: ""
+      public_link_limit:
+        description: "Tester limit of the public link (0 = no limit)"
+        default: "100"
       status_only:
         description: "READ ONLY: print the App Store version and its selected build, the TestFlight builds with their beta review states, the Test Information and the groups. Changes nothing, builds nothing"
         type: boolean
@@ -260,6 +263,8 @@ jobs:
       MARKETING_VERSION: ${{ inputs.marketing_version }}
       BUILD_NUMBER: ${{ inputs.existing_build || github.run_number }}
       GROUP_NAME: ${{ inputs.public_group_name }}
+      LINK_LIMIT: ${{ inputs.public_link_limit }}
+      PRIVACY_URL: https://github.com/jfbobier/AirFrameXR/blob/main/PRIVACY.md
       # Test Information that Beta App Review requires (repository variables, optional: unset = left as it is in App Store Connect)
       BETA_DESCRIPTION: ${{ vars.BETA_DESCRIPTION }}
       BETA_FEEDBACK_EMAIL: ${{ vars.BETA_FEEDBACK_EMAIL }}
@@ -268,6 +273,10 @@ jobs:
       BETA_CONTACT_PHONE: ${{ vars.BETA_CONTACT_PHONE }}
       BETA_CONTACT_EMAIL: ${{ vars.BETA_CONTACT_EMAIL }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: docs/BETA_REVIEW_NOTES.md
+          sparse-checkout-cone-mode: false
       - name: Public link
         run: |
           mkdir -p "$RUNNER_TEMP/asc"
@@ -330,6 +339,9 @@ jobs:
           elif not grp["attributes"].get("publicLinkEnabled"):
               grp = call("PATCH", f"/v1/betaGroups/{grp['id']}", {"data": {"type": "betaGroups", "id": grp["id"], "attributes": {"publicLinkEnabled": True, "publicLinkLimitEnabled": False}}})["data"]
           gid = grp["id"]
+          lim = int(E.get("LINK_LIMIT") or 0)
+          call("PATCH", f"/v1/betaGroups/{gid}", {"data": {"type": "betaGroups", "id": gid, "attributes": {"publicLinkLimitEnabled": lim > 0, **({"publicLinkLimit": lim} if lim > 0 else {})}}})
+          print(f"public link limit: {lim or 'none'}")
           call("POST", f"/v1/betaGroups/{gid}/relationships/builds", {"data": [{"type": "builds", "id": bid}]}, ok_errors=(409,))
           # Test Information: description + feedback email (localization) and the review contact
           if E.get("BETA_DESCRIPTION"):
@@ -349,6 +361,15 @@ jobs:
               det = call("GET", f"/v1/apps/{app_id}/betaAppReviewDetail")["data"]
               call("PATCH", f"/v1/betaAppReviewDetails/{det['id']}", {"data": {"type": "betaAppReviewDetails", "id": det["id"], "attributes": dict(contact, demoAccountRequired=False)}})
               print("beta review contact set")
+          # Test Information that is not a repository variable: privacy policy URL (localization) and the review notes (from the repo file)
+          locs = call("GET", f"/v1/apps/{app_id}/betaAppLocalizations")["data"]
+          for l in locs:
+              call("PATCH", f"/v1/betaAppLocalizations/{l['id']}", {"data": {"type": "betaAppLocalizations", "id": l["id"], "attributes": {"privacyPolicyUrl": E["PRIVACY_URL"]}}})
+          print("privacy policy url set")
+          notes = open("docs/BETA_REVIEW_NOTES.md").read().strip()
+          det = call("GET", f"/v1/apps/{app_id}/betaAppReviewDetail")["data"]
+          call("PATCH", f"/v1/betaAppReviewDetails/{det['id']}", {"data": {"type": "betaAppReviewDetails", "id": det["id"], "attributes": {"notes": notes}}})
+          print(f"beta review notes set ({len(notes)} chars)")
           # Beta App Review (needed once per version for external testers). Needs contact details in App Store Connect > TestFlight > Test Information.
           call("POST", "/v1/betaAppReviewSubmissions", {"data": {"type": "betaAppReviewSubmissions", "relationships": {"build": {"data": {"type": "builds", "id": bid}}}}}, ok_errors=(409, 422))
           grp = call("GET", f"/v1/betaGroups/{gid}")["data"]
