@@ -36,6 +36,10 @@ on:
       expire_versions:
         description: "Marketing versions whose builds are expired in TestFlight, separated by ',' (e.g. 1.4). Only this runs: no build. Then the newest valid build of marketing_version (or existing_build) is added to the internal groups, and the builds testers can install are listed"
         default: ""
+      status_only:
+        description: "READ ONLY: print the App Store version and its selected build, the TestFlight builds with their beta review states, the Test Information and the groups. Changes nothing, builds nothing"
+        type: boolean
+        default: false
       revoke_ci_certificates:
         description: "First revoke the certificates earlier runs created on the team ('Created via API'): tick when signing says the account has reached the maximum number of certificates"
         type: boolean
@@ -51,7 +55,7 @@ concurrency:
 jobs:
   testflight:
     name: Archive and upload
-    if: ${{ inputs.existing_build == '' && inputs.invite_testers == '' && inputs.expire_versions == '' }}
+    if: ${{ !inputs.status_only && inputs.existing_build == '' && inputs.invite_testers == '' && inputs.expire_versions == '' }}
     runs-on: xcode-27   # needs the visionOS 27 SDK (GCControllerHomeButtonSettingsManager); the standard macos-26 image only has Xcode 26.6 (checked 2026-11-04)
     timeout-minutes: 90
     env:
@@ -500,4 +504,80 @@ jobs:
               call("POST", "/v1/userInvitations", {"data": {"type": "userInvitations", "attributes": {"email": email, "firstName": first, "lastName": last.strip(), "roles": ["MARKETING"], "allAppsVisible": False, "provisioningAllowed": False},
                   "relationships": {"visibleApps": {"data": [{"type": "apps", "id": app_id}]}}}})
               print(f"{email}: invitation sent (role Marketing, this app only). After they accept, run again to add them to the group")
+          PY
+
+  status:
+    name: Read-only App Store Connect status
+    if: ${{ inputs.status_only }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+    steps:
+      - name: Status (GET requests only)
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/key.p8"
+          export ASC_KEY_PATH="$RUNNER_TEMP/asc/key.p8"
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages pyjwt cryptography
+          python3 - <<'PY'
+          # Only GET is ever sent. The repository is public: no contact e-mail, phone or demo credentials are printed, only whether they are set.
+          import json, os, sys, time, urllib.error, urllib.parse, urllib.request, jwt
+          E = os.environ
+          key = open(E["ASC_KEY_PATH"]).read()
+          def get(path):
+              url = "https://api.appstoreconnect.apple.com" + path
+              tok = jwt.encode({"iss": E["ASC_ISSUER_ID"], "iat": int(time.time()), "exp": int(time.time()) + 600, "aud": "appstoreconnect-v1"}, key, algorithm="ES256", headers={"kid": E["ASC_KEY_ID"]})
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})) as r:
+                      return json.loads(r.read() or b"{}")
+              except urllib.error.HTTPError as e:
+                  print(f"  (GET {path.split('?')[0]} -> {e.code}: {e.read().decode()[:200]})")
+                  return {}
+          out = []
+          def say(t=""):
+              print(t); out.append(t)
+          q = urllib.parse.quote
+          app = get(f"/v1/apps?filter[bundleId]={q(E['BUNDLE_ID'])}").get("data", [])
+          if not app:
+              print("::error::no app record"); sys.exit(1)
+          aid = app[0]["id"]
+          say(f"App {app[0]['attributes'].get('name')} ({E['BUNDLE_ID']})")
+          say("\n== App Store versions (record only, nothing is touched)")
+          for v in get(f"/v1/apps/{aid}/appStoreVersions?limit=5").get("data", []):
+              a = v["attributes"]
+              b = (get(f"/v1/appStoreVersions/{v['id']}/build").get("data") or {}).get("attributes", {})
+              sub = (get(f"/v1/appStoreVersions/{v['id']}/appStoreVersionSubmission").get("data") or {}).get("id")
+              say(f"  {a.get('versionString')} state={a.get('appStoreState')} version_id={v['id']} selected_build={b.get('version')} submission_id={sub}")
+          say("\n== Review submissions (App Store side)")
+          for r in get(f"/v1/apps/{aid}/reviewSubmissions?limit=5").get("data", []):
+              a = r["attributes"]
+              say(f"  {r['id']} state={a.get('state')} submitted={a.get('submittedDate')}")
+          say("\n== TestFlight builds (newest first)")
+          for b in get(f"/v1/builds?filter[app]={aid}&sort=-uploadedDate&limit=15&include=preReleaseVersion").get("data", []):
+              a = b["attributes"]
+              d = (get(f"/v1/builds/{b['id']}/buildBetaDetail").get("data") or {}).get("attributes", {})
+              r = (get(f"/v1/builds/{b['id']}/betaAppReviewSubmission").get("data") or {}).get("attributes", {})
+              say(f"  build {a.get('version')} uploaded={a.get('uploadedDate')} processing={a.get('processingState')} expired={a.get('expired')} "
+                  f"encryption_exempt={a.get('usesNonExemptEncryption')} internal={d.get('internalBuildState')} external={d.get('externalBuildState')} "
+                  f"beta_review={r.get('betaReviewState')} submitted={r.get('submittedDate')}")
+          say("\n== Test Information")
+          for l in get(f"/v1/apps/{aid}/betaAppLocalizations").get("data", []):
+              a = l["attributes"]
+              say(f"  {a.get('locale')}: description {len(a.get('description') or '')} chars, feedback e-mail set={bool(a.get('feedbackEmail'))}, "
+                  f"marketing url set={bool(a.get('marketingUrl'))}, privacy url set={bool(a.get('privacyPolicyUrl'))}")
+              say(f"    description: {(a.get('description') or '')[:600]}")
+          det = (get(f"/v1/apps/{aid}/betaAppReviewDetail").get("data") or {}).get("attributes", {})
+          say(f"  review contact set: first={bool(det.get('contactFirstName'))} last={bool(det.get('contactLastName'))} phone={bool(det.get('contactPhone'))} email={bool(det.get('contactEmail'))}")
+          say(f"  demoAccountRequired={det.get('demoAccountRequired')} demo name set={bool(det.get('demoAccountName'))}")
+          say(f"  review notes ({len(det.get('notes') or '')} chars): {(det.get('notes') or '')[:1500]}")
+          say("\n== Beta groups")
+          for g in get(f"/v1/apps/{aid}/betaGroups").get("data", []):
+              a = g["attributes"]
+              say(f"  {a.get('name')} internal={a.get('isInternalGroup')} public_link_enabled={a.get('publicLinkEnabled')} link={a.get('publicLink')} limit={a.get('publicLinkLimit')}")
+          with open(E["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### App Store Connect status (read only)\n\n```\n" + "\n".join(out) + "\n```\n")
           PY
