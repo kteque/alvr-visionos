@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       marketing_version:
-        description: "App version shown in TestFlight (CFBundleShortVersionString)"
-        default: "1.3.11"
+        description: "App version (CFBundleShortVersionString): the compatibility version, see docs/VERSIONING.md; leave it as it is unless the protocol changes"
+        default: "1.4.1"
       low_latency_streaming:
         description: "Include the low-latency-streaming entitlement (untick if signing complains about it)"
         type: boolean

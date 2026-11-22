@@ -1,0 +1,31 @@
+diff --git a/alvr/sockets/src/control_socket.rs b/alvr/sockets/src/control_socket.rs
+index 62c6d08..4044288 100644
+--- a/alvr/sockets/src/control_socket.rs
++++ b/alvr/sockets/src/control_socket.rs
+@@ -101,7 +101,13 @@ pub struct ControlSocketSender<T> {
+ 
+ impl<S: Serialize> ControlSocketSender<S> {
+     pub fn send(&mut self, packet: &S) -> Result<()> {
+-        framed_send(&mut self.inner, &mut self.buffer, packet)
++        let res = framed_send(&mut self.inner, &mut self.buffer, packet);
++        if res.is_err() {
++            // AirFrameXR: a send that timed out may have written half a frame; the stream cannot be used any
++            // more. Closing it makes the receiver fail, so the connection is torn down and rebuilt.
++            self.inner.shutdown(std::net::Shutdown::Both).ok();
++        }
++        res
+     }
+ }
+ 
+@@ -180,6 +186,11 @@ impl ProtoControlSocket {
+         timeout: Duration,
+     ) -> Result<(ControlSocketSender<S>, ControlSocketReceiver<R>)> {
+         self.inner.set_read_timeout(Some(timeout))?;
++        // AirFrameXR: a send must never block for ever. With a dead link the send buffer fills and write_all
++        // waits for the OS (minutes), with the control_sender mutex held: every other thread of the core queues
++        // behind it and the app is killed (field death 2026-11-21).
++        self.inner
++            .set_write_timeout(Some(Duration::from_secs(2)))?;
+ 
+         Ok((
+             ControlSocketSender {
