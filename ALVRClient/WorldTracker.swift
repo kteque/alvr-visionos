@@ -1031,6 +1031,106 @@ class WorldTracker {
         }
     }
 
+    // MARK: - Hands position plain gamepads (Joy-Con)
+
+    /// Which hands a plain (untracked) gamepad is held in. The tracked spatial controllers (PS VR2 Sense) do not count: they
+    /// have their own pose. One Joy-Con is one hand; a pair or any other gamepad is both. Cached for half a second:
+    /// this runs on every tracking send and the controller list changes rarely.
+    private var gamepadHandsCache: (left: Bool, right: Bool) = (false, false)
+    private var gamepadHandsCacheTime = 0.0
+    func gamepadHands() -> (left: Bool, right: Bool) {
+        let now = CACurrentMediaTime()
+        if now - gamepadHandsCacheTime < 0.5 { return gamepadHandsCache }
+        gamepadHandsCacheTime = now
+        let spatial = GCController.spatialControllers()
+        var left = false, right = false
+        for c in GCController.controllers() where !spatial.contains(where: { $0 === c }) {
+            switch c.vendorName {
+            case "Joy-Con (L)": left = true
+            case "Joy-Con (R)": right = true
+            default: left = true; right = true
+            }
+        }
+        gamepadHandsCache = (left, right)
+        return gamepadHandsCache
+    }
+
+    /// Palm pose of a tracked hand in SteamVR space (the pose a controller held in that hand would have).
+    /// Restored from the pre-1.3.1 client; pose only: no pinch, no skeleton, no spatial events.
+    func handAnchorToPose(_ hand: HandAnchor) -> AlvrPose {
+        let isRight = hand.chirality == .right
+        let toSteamVR = self.worldTrackingSteamVRTransform.inverse * hand.originFromAnchorTransform
+        var position: simd_float4
+        var orientation: simd_quatf
+        if let skeleton = hand.handSkeleton {
+            let metacarpal = toSteamVR * skeleton.joint(.middleFingerMetacarpal).anchorFromJointTransform
+            let knuckle = toSteamVR * skeleton.joint(.middleFingerKnuckle).anchorFromJointTransform
+            let wrist = toSteamVR * skeleton.joint(.wrist).anchorFromJointTransform
+            // The OpenXR palm: midway between the middle metacarpal and the middle knuckle.
+            position = (metacarpal.columns.3 + knuckle.columns.3) / 2.0
+            orientation = simd_quaternion(wrist)
+            // Measured against the SteamVR dashboard pointer in the original client.
+            let adj = isRight ? simd_float3(-0.0270715057, -0.0404448576, 0.0009587705) : simd_float3(0.0270715057, 0.0404448576, -0.0009587705)
+            position += orientation.act(adj).asFloat4()
+            let tilt = simd_quatf(from: simd_float3(0.0, 1.0, 0.0), to: simd_normalize(simd_float3(0.0, 1.0, -0.458)))
+            orientation = orientation * (isRight ? WorldTracker.rightHandOrientationCorrectionForSkeleton : WorldTracker.leftHandOrientationCorrectionForSkeleton)
+            orientation = orientation * ((isRight ? WorldTracker.rightHandOrientationCorrection : WorldTracker.leftHandOrientationCorrection) * tilt)
+        } else {
+            orientation = simd_quaternion(toSteamVR) * (isRight ? WorldTracker.rightHandOrientationCorrection : WorldTracker.leftHandOrientationCorrection)
+            position = toSteamVR.columns.3
+        }
+        position = position.asSanitized() + floorCorrectionTransform.asFloat4()
+        orientation = orientation.asSanitized()
+        return AlvrPose(orientation: AlvrQuat(x: orientation.vector.x, y: orientation.vector.y, z: orientation.vector.z, w: orientation.vector.w), position: (position.x, position.y, position.z))
+    }
+
+    /// Velocity-based exponential moving average: removes jitter while the hand is slow, follows it when it moves.
+    func filterHandPose(_ lastPose: AlvrPose, _ pose: AlvrPose, dt: Float) -> AlvrPose {
+        let dp = simd_float3(pose.position.0 - lastPose.position.0, pose.position.1 - lastPose.position.1, pose.position.2 - lastPose.position.2)
+        let speed = simd_length(dp / dt)
+        let movementThreshold: Float = 0.15
+        var alpha = speed * 0.6 * 0.99 / movementThreshold
+        alpha = alpha * alpha * movementThreshold
+        if alpha > 1.0 { alpha = 1.0 } else if alpha < 0.1 { alpha = 0.01 }
+        let inv = 1.0 - alpha
+        let position = simd_float3(pose.position.0 * alpha + lastPose.position.0 * inv,
+                                   pose.position.1 * alpha + lastPose.position.1 * inv,
+                                   pose.position.2 * alpha + lastPose.position.2 * inv)
+        let orientation = simd_slerp(lastPose.orientation.asQuatf(), pose.orientation.asQuatf(), alpha)
+        if position.isUnsanitary() { return pose }
+        return AlvrPose(orientation.asSanitized(), position.asSanitized())
+    }
+
+    var lastHandPoseSendTime: [Double] = [0, 0]  // 0 = left, 1 = right
+    var handPoseValid: [Bool] = [false, false]
+
+    /// The device motion for a hand that holds an untracked gamepad, or nil (hand never seen yet).
+    func handAnchorToAlvrDeviceMotion(_ hand: HandAnchor) -> AlvrDeviceMotion? {
+        let isLeft = hand.chirality == .left
+        let h = isLeft ? 0 : 1
+        let device_id = isLeft ? WorldTracker.deviceIdLeftHand : WorldTracker.deviceIdRightHand
+        let lastPose = isLeft ? lastLeftHandPose : lastRightHandPose
+        var vel: (Float, Float, Float) = (0, 0, 0)
+        var ang: (Float, Float, Float) = (0, 0, 0)
+        if hand.isTracked {
+            let now = CACurrentMediaTime()
+            var dt = Float(now - lastHandPoseSendTime[h])
+            if dt <= 0.0 || dt > 0.25 { dt = 0.010 }
+            lastHandPoseSendTime[h] = now
+            let raw = handAnchorToPose(hand)
+            let pose = handPoseValid[h] ? filterHandPose(lastPose, raw, dt: dt) : raw
+            handPoseValid[h] = true
+            vel = ((pose.position.0 - lastPose.position.0) / dt, (pose.position.1 - lastPose.position.1) / dt, (pose.position.2 - lastPose.position.2) / dt)
+            ang = angularVelocityBetweenQuats(lastPose.orientation, pose.orientation, dt)
+            if isLeft { lastLeftHandPose = pose; lastLeftHandVel = vel; lastLeftHandAngVel = ang }
+            else { lastRightHandPose = pose; lastRightHandVel = vel; lastRightHandAngVel = ang }
+        } else if !handPoseValid[h] {
+            return nil
+        }
+        // A hand that is not tracked holds its last pose, still.
+        return AlvrDeviceMotion(device_id: device_id, pose: isLeft ? lastLeftHandPose : lastRightHandPose, linear_velocity: vel, angular_velocity: ang)
+    }
+
     func controllerToAlvrDeviceMotion(_ isLeft: Bool, _ targetTs: Double) -> AlvrDeviceMotion? {
         let device_id = isLeft ? WorldTracker.deviceIdLeftHand : WorldTracker.deviceIdRightHand
         if (isLeft ? self.leftControllerPose : self.rightControllerPose) == nil || self.accessoryTracking == nil {
@@ -2527,6 +2627,20 @@ class WorldTracker {
         // The Steam Controller has no anchor of its own, so its pose is solved
         // here, where the hands that are holding it are already in hand.
         updateSteamControllerFusion(handPoses.leftHand, handPoses.rightHand, anchorTimestamp)
+
+        // "Hands position gamepads" (off by default): an untracked gamepad (Joy-Con) has no pose of its own, so the hand holding it
+        // gives one. Tracked and Steam controllers override it just below. Switch off or no such gamepad: nothing is computed.
+        if ALVRClientApp.gStore.settings.handsPositionGamepads {
+            let sides = gamepadHands()
+            if sides.left, let hand = handPoses.leftHand, let m = handAnchorToAlvrDeviceMotion(hand) {
+                trackingMotions.removeAll(where: {$0.device_id == WorldTracker.deviceIdLeftHand })
+                trackingMotions.append(m)
+            }
+            if sides.right, let hand = handPoses.rightHand, let m = handAnchorToAlvrDeviceMotion(hand) {
+                trackingMotions.removeAll(where: {$0.device_id == WorldTracker.deviceIdRightHand })
+                trackingMotions.append(m)
+            }
+        }
 
         // Controllers override hand simulated controllers
         let controllerLeftMotion = controllerToAlvrDeviceMotion(true, controllerPredictionTimestamp)

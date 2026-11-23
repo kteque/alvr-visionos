@@ -44,6 +44,8 @@ struct GlobalSettings: Codable {
     var lastUsedAppVersion = "never launched"
     var chaperoneDistanceCm: Int = 0
     var claimControllerHomeButton: Bool = true
+    /// A plain gamepad (Joy-Con) has no tracking: the hand holding it gives the game its position. Pose only, no pinch.
+    var handsPositionGamepads: Bool = false
     
     private enum LegacyKeys: String, CodingKey { case fovRenderScale }
 
@@ -80,6 +82,7 @@ struct GlobalSettings: Codable {
         self.lastUsedAppVersion = try container.decodeIfPresent(String.self, forKey: .lastUsedAppVersion) ?? self.lastUsedAppVersion
         self.chaperoneDistanceCm = try container.decodeIfPresent(Int.self, forKey: .chaperoneDistanceCm) ?? self.chaperoneDistanceCm
         self.claimControllerHomeButton = try container.decodeIfPresent(Bool.self, forKey: .claimControllerHomeButton) ?? self.claimControllerHomeButton
+        self.handsPositionGamepads = try container.decodeIfPresent(Bool.self, forKey: .handsPositionGamepads) ?? self.handsPositionGamepads
     }
 }
 
