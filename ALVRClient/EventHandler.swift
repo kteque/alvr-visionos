@@ -277,6 +277,13 @@ class EventHandler: ObservableObject {
             // the left eye's outer edge is its left one; the right eye's outer edge is its right one
             view = [simd_float4(l[0], l[1], l[2], l[3]), simd_float4(r[1], r[0], r[2], r[3])]
         }
+        // frame timing experiment (AirFrameXR exp_timing.rs): the streamer's arm sets the client's switches; no `exp` = today's behaviour
+        let exp = root["exp"] as? [String: Any]
+        let sustained = max(0, (exp?["catchup_sustained"] as? NSNumber)?.intValue ?? 0)
+        if sustained != EventHandler.catchUpSustainedPicks {
+            EventHandler.catchUpSustainedPicks = sustained
+            "[exp] catch-up sustained \(sustained) (0 = off)".withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+        }
         let sharpen = (root["sharpen"] as? Bool) ?? false
         if setHeadsetView(view, sharpen: sharpen) {
             let desc = view.map { "L \($0[0]) R \($0[1])" } ?? "none"

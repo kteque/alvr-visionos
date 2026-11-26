@@ -42,6 +42,8 @@ enum Phase {
     case setHoldMax(seconds: Double)
     /// the "Stream audio when headset removed" switch
     case holdSwitch(on: Bool)
+    /// the streamer sends a Reserved control packet (the headset view message: view box, sharpen, the frame timing experiment's `exp` switches)
+    case reserved(String)
     /// the client enters its immersive space (render loop starts) at this point of the script
     case enterImmersive
     /// the decoder session dies under the client (VideoToolbox returns kVTInvalidSessionErr, as after a pause)
@@ -179,6 +181,9 @@ let scenarios: [Scenario] = [
              phases: [game90, .holdSwitch(on: false), .background(seconds: 4), game90], expectExit: true),
     Scenario(name: "background_hold", about: "headset off for 4 s with a stream up: connection kept, no picture decoded, no exit, picture back after",
              phases: [game90, .background(seconds: 4), game90], expectHold: true),
+    Scenario(name: "exp_switches", about: "frame timing experiment: the streamer turns the sustained catch-up on, off and on again mid-stream (live, no reconnect); the picture keeps going",
+             phases: [game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"exp\":{\"catchup_sustained\":10}}"), .stream(seconds: 4, fps: 90, arrivalJitterMs: 6, spikeProb: 0.05, spikeMs: 20),
+                      .reserved("{\"airframexr\":1,\"sharpen\":true}"), game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"exp\":{\"catchup_sustained\":3}}"), game90]),
     Scenario(name: "background_hold_long", about: "headset off for 12 s: the stream is still held, no keyframe storm while off, picture back after",
              phases: [game90, .background(seconds: 12), game90], expectHold: true),
 ]
@@ -289,6 +294,8 @@ final class Host: @unchecked Sendable {
             UIApplication.shared.applicationState = .active
         case .holdSwitch(let on):
             EventHandler.shared.holdStreamWhenHeadsetOff = on
+        case .reserved(let text):
+            FakeCore.shared.reserved(text)
         case .setHoldMax(let s):
             EventHandler.backgroundHoldMax = s
         case .enterImmersive:
