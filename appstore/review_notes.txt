@@ -20,3 +20,6 @@ CONTENT / PRIVACY
 The app has no content of its own. The developer collects no data (see https://github.com/jfbobier/AirFrameXR/blob/main/PRIVACY.md). Encryption: only what the operating system provides; no encryption library is bundled.
 
 Contact for questions during review: see the contact details of this submission.
+
+UPDATE 1.4.1
+Minor update: performance and stability improvements. Same architecture, permissions and behaviour as the approved version; no new data collection; still fully compatible with the latest ALVR.

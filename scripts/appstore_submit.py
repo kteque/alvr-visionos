@@ -6,7 +6,7 @@ availability, review details and notes, screenshots, review video. Idempotent: r
 Not possible through the API (a person does these once in the web UI): privacy nutrition label, App Motion Information, EU DSA trader status.
 
 Env: ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH BUNDLE_ID REVIEW_CONTACT_{FIRST,LAST,PHONE,EMAIL}
-     VERSION (marketing version, e.g. 1.3.10)  BUILD (build number or empty = newest VALID)  SUBMIT (1 = submit for review)
+     VERSION (marketing version, e.g. 1.4.1)  BUILD (build number or empty = newest VALID)  SUBMIT (1 = submit for review)
 """
 import hashlib, json, os, sys, time, urllib.error, urllib.parse, urllib.request, glob
 import jwt
@@ -105,7 +105,7 @@ call("PATCH", f"/v1/apps/{aid}", {"data": {"type": "apps", "id": aid, "attribute
 step("texts")
 for loc in call("GET", f"/v1/appStoreVersions/{vid}/appStoreVersionLocalizations")["data"]:
     call("PATCH", f"/v1/appStoreVersionLocalizations/{loc['id']}", {"data": {"type": "appStoreVersionLocalizations", "id": loc["id"], "attributes": {
-        "description": read("description.txt"), "keywords": read("keywords.txt"), "supportUrl": SUPPORT_URL, "marketingUrl": MARKETING_URL}}}, soft="version texts")
+        "description": read("description.txt"), "keywords": read("keywords.txt"), "whatsNew": read("whats_new.txt"), "supportUrl": SUPPORT_URL, "marketingUrl": MARKETING_URL}}}, soft="version texts")
     print("localization", loc["attributes"]["locale"], "filled")
 
 # ---- app info: category, subtitle, privacy URL, age rating

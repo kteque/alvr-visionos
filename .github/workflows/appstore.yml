@@ -9,7 +9,7 @@ on:
     inputs:
       version:
         description: "Marketing version of the TestFlight build to submit (CFBundleShortVersionString)"
-        default: "1.3.10"
+        default: "1.4.1"
       build:
         description: "Build number (empty = the newest valid build of that version)"
         default: ""
@@ -34,7 +34,7 @@ jobs:
       REVIEW_CONTACT_LAST: ${{ secrets.BETA_CONTACT_LAST }}
       REVIEW_CONTACT_PHONE: ${{ secrets.BETA_CONTACT_PHONE }}
       REVIEW_CONTACT_EMAIL: ${{ secrets.BETA_CONTACT_EMAIL }}
-      VERSION: ${{ inputs.version || '1.3.10' }}
+      VERSION: ${{ inputs.version || '1.4.1' }}
       BUILD: ${{ inputs.build }}
       SUBMIT: ${{ inputs.submit && '1' || '0' }}
     steps:
