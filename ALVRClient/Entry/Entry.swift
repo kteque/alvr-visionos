@@ -128,6 +128,13 @@ struct Entry: View {
                     Text("Proximity chaperone")
                 }
                 .toggleStyle(.switch)
+                Toggle(isOn: $gStore.settings.handsPositionGamepads) {
+                    Text("Hands tracking for gamepad")
+                }
+                .toggleStyle(.switch)
+                .onChange(of: gStore.settings.handsPositionGamepads) {
+                    saveAction()
+                }
                 Toggle(isOn: $gStore.settings.streamAudioWhenHeadsetOff) {
                     Text("Stream audio when headset removed")
                 }

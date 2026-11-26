@@ -4,6 +4,8 @@ The visionOS client of [AirFrameXR](https://github.com/jfbobier/AirFrameXR): wir
 the game through AirFrameXR's OpenXR runtime (frame generation, foveated encoding, NVENC) and streams it with the ALVR v20
 protocol. This app shows the stream on the Vision Pro and sends back head tracking and controller input.
 
+**Try it:** [join the public TestFlight beta](https://testflight.apple.com/join/QYxnfNWM) (limited to 100 testers). It needs the AirFrameXR streamer on a Windows PC with an NVIDIA GPU on the same network.
+
 Version 1.4.1 (numbered with the AirFrameXR streamer it pairs with). The version history is in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ---
@@ -15,7 +17,7 @@ Version 1.4.1 (numbered with the AirFrameXR streamer it pairs with). The version
 - An Apple Vision Pro. The PSVR2 Sense controllers need visionOS 26 or later; visionOS 27 is what the app is built against.
 - A Windows PC with an NVIDIA graphics card running the AirFrameXR streamer, on the same network. The app finds the PC by itself.
 - A controller: PlayStation VR2 Sense controllers (best supported), a Steam Controller, or a gamepad (DualSense, Xbox, Joy-Con).
-  Your hands do not reach the game: there is no pinch input.
+  Your hands do not reach the game: there is no pinch input (one opt-in exception for gamepads, see Switches).
 
 ## The window
 
@@ -26,7 +28,7 @@ When you open the app you see one window, from top to bottom:
 2. **The Auto-connect card** (see below).
 3. **The height line**, for example `HMD 1.62 m + offset +5 cm = 1.67 m`: the height the headset reports, your offset, and what the game
    gets as your eye height. The slider moves the offset by up to 50 cm either way. Use it if the game puts you too low or too high.
-4. **The switches**: Proximity chaperone, Stream audio when headset removed, Auto-recenter on stream start, Flat2VR mode for PSVR2 buttons.
+4. **The switches**: Proximity chaperone, Hands tracking for gamepad, Stream audio when headset removed, Auto-recenter on stream start, Flat2VR mode for PSVR2 buttons.
 5. **The recenter reminder**: Recenter = Create + Options.
 6. **Enter**, which starts the stream once the PC is connected. It reads "Connecting..." until then.
 
@@ -49,6 +51,10 @@ Off by default.
 **Proximity chaperone** (off by default). When your hands or controllers come within 30 cm of a wall or a piece of furniture the headset has
 mapped, the surface is drawn in the game and the controller pulses. It is a safety net, not a boundary: it only knows what the headset has
 seen.
+
+**Hands tracking for gamepad** (off by default). A gamepad without tracking, such as a Joy-Con, has no position of its own. With this on, the hand
+holding it gives the game one: a single Joy-Con moves its own hand, a pair or any other gamepad moves both. Pose only, never a pinch or a click, and
+PlayStation VR2 Sense or Steam controllers take priority. Not tested on a headset yet.
 
 **Stream audio when headset removed** (on by default). Take the headset off to open the door and the game keeps running and its audio keeps
 playing, with no picture. Put the headset back on and the picture returns by itself. The app stays alive in the background for up to 30
