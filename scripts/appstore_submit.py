@@ -82,7 +82,14 @@ step(f"app {aid}, version {version}")
 vers = call("GET", f"/v1/apps/{aid}/appStoreVersions?filter[platform]=VISION_OS&limit=10")["data"]
 editable = [v for v in vers if v["attributes"]["appStoreState"] in ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY")]
 if not editable:
-    print("::error::no editable visionOS version (one is already in review or live)"); sys.exit(1)
+    if any(v["attributes"]["appStoreState"] in ("WAITING_FOR_REVIEW", "IN_REVIEW") for v in vers):
+        print("::error::a visionOS version is already in review"); sys.exit(1)
+    # nothing editable (the last version is approved or live): open the next one
+    print("no editable version, creating", version)
+    created = call("POST", "/v1/appStoreVersions", {"data": {"type": "appStoreVersions", "attributes": {
+        "platform": "VISION_OS", "versionString": version, "releaseType": "MANUAL"},
+        "relationships": {"app": {"data": {"type": "apps", "id": aid}}}}})
+    editable = [created["data"]]
 ver = editable[0]
 vid = ver["id"]
 call("PATCH", f"/v1/appStoreVersions/{vid}", {"data": {"type": "appStoreVersions", "id": vid, "attributes": {
