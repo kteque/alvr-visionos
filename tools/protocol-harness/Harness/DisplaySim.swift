@@ -124,6 +124,8 @@ final class DisplaySim: @unchecked Sendable {
         let pickT = HarnessLog.shared.now()
         lastPickWaitMs = (CACurrentMediaTime() - pickStart) * 1e3
         HarnessStats.shared.count("pick_wait_ms_total", by: Int(lastPickWaitMs))
+        // Renderer.swift renderFrame: the tick counts (va_ticks) and, on the experiment branch, the slack reporter (va_slack) follow the pick
+        eh.reportTicksIfDue(streaming: streamingActiveForFrame)
         switch pick {
         case .resubmit(let f):
             pickKind = 2
