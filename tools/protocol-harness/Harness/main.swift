@@ -42,6 +42,8 @@ enum Phase {
     case setHoldMax(seconds: Double)
     /// the "Stream audio when headset removed" switch
     case holdSwitch(on: Bool)
+    /// the streamer sends a Reserved control packet (the headset view message: view box, sharpen)
+    case reserved(String)
     /// the client enters its immersive space (render loop starts) at this point of the script
     case enterImmersive
     /// the decoder session dies under the client (VideoToolbox returns kVTInvalidSessionErr, as after a pause)
@@ -179,6 +181,9 @@ let scenarios: [Scenario] = [
              phases: [game90, .holdSwitch(on: false), .background(seconds: 4), game90], expectExit: true),
     Scenario(name: "background_hold", about: "headset off for 4 s with a stream up: connection kept, no picture decoded, no exit, picture back after",
              phases: [game90, .background(seconds: 4), game90], expectHold: true),
+    Scenario(name: "target_pick", about: "bursty arrivals (stalls released together) after the streamer's view message: the target pick drops the frames whose tick has passed, the picture keeps going",
+             phases: [game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"view\":{\"left\":[0.92,0.58,0.9,0.77],\"right\":[0.92,0.58,0.9,0.77]}}"),
+                      .stream(seconds: 6, fps: 90, arrivalJitterMs: 4, spikeProb: 0.08, spikeMs: 22), game90]),
     Scenario(name: "background_hold_long", about: "headset off for 12 s: the stream is still held, no keyframe storm while off, picture back after",
              phases: [game90, .background(seconds: 12), game90], expectHold: true),
 ]
@@ -289,6 +294,8 @@ final class Host: @unchecked Sendable {
             UIApplication.shared.applicationState = .active
         case .holdSwitch(let on):
             EventHandler.shared.holdStreamWhenHeadsetOff = on
+        case .reserved(let text):
+            FakeCore.shared.reserved(text)
         case .setHoldMax(let s):
             EventHandler.backgroundHoldMax = s
         case .enterImmersive:
@@ -457,7 +464,7 @@ let args = CommandLine.arguments
 func argValue(_ k: String) -> String? { args.firstIndex(of: k).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 
 if args.count < 2 || args[1] == "list" {
-    for s in scenarios { Swift.print("\(s.name.padding(toLength: 20, withPad: " ", startingAt: 0)) \(s.about)") }
+    for s in scenarios { Swift.print("\(s.name.padding(toLength: max(20, s.name.count), withPad: " ", startingAt: 0)) \(s.about)") }   // a longer name is not cut (run.sh takes the first word)
     Glibc.exit(0)
 }
 guard args[1] == "run", args.count >= 3, let sc = scenarios.first(where: { $0.name == args[2] }) else {

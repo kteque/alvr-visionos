@@ -122,6 +122,7 @@ final class FakeCore: @unchecked Sendable {
     var configId: UInt32 = 1
     var width: UInt32 = 3552
     var height: UInt32 = 3200
+    var reservedMessage = ""   // the last ServerControlPacket::Reserved text (patches/client_core-reserved-message.patch)
     var hudMessage = "ALVR 20.14.1\nhostname: harness\nIP: 127.0.0.1\nThe stream will begin soon\nPlease wait...\n"
 
     // IDR requests from the client side of the core (loss, saturation, callback install)
@@ -208,6 +209,15 @@ final class FakeCore: @unchecked Sendable {
         e.tag = AlvrEvent_Tag(ALVR_EVENT_STREAMING_STOPPED.rawValue)
         push(e)
         HarnessLog.shared.event("host_streaming_stopped", ["why": why])
+    }
+
+    /// The streamer sends a Reserved control packet (AirFrameXR's channel: the view box and the sharpen switch).
+    func reserved(_ message: String) {
+        lock.lock(); reservedMessage = message; lock.unlock()
+        var e = AlvrEvent()
+        e.tag = AlvrEvent_Tag(ALVR_EVENT_RESERVED_MESSAGE.rawValue)
+        push(e)
+        HarnessLog.shared.event("host_reserved_message", ["text": message])
     }
 
     func hud(_ message: String) {
@@ -348,6 +358,10 @@ private func writeCString(_ s: String, _ buf: UnsafeMutablePointer<CChar>?) -> U
 
 @_cdecl("alvr_hud_message") func h_alvr_hud_message(_ buf: UnsafeMutablePointer<CChar>?) -> UInt64 {
     FakeCore.shared.lock.lock(); let m = FakeCore.shared.hudMessage; FakeCore.shared.lock.unlock()
+    return writeCString(m, buf)
+}
+@_cdecl("alvr_reserved_message") func h_alvr_reserved_message(_ buf: UnsafeMutablePointer<CChar>?) -> UInt64 {
+    FakeCore.shared.lock.lock(); let m = FakeCore.shared.reservedMessage; FakeCore.shared.lock.unlock()
     return writeCString(m, buf)
 }
 @_cdecl("alvr_get_server_version") func h_alvr_get_server_version(_ buf: UnsafeMutablePointer<CChar>?) -> UInt64 { writeCString("20.14.1", buf) }

@@ -86,7 +86,9 @@ final class DisplaySim: @unchecked Sendable {
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
         objc_sync_enter(eh.frameQueueLock); let depthAtPick = eh.frameQueue.count; objc_sync_exit(eh.frameQueueLock)
         let pickStart = CACurrentMediaTime()
-        let pick = eh.pollFrameForDisplay(timeout: 0.005)
+        // the client's own wait (8 ms since 1.3.9) and the tick's presentation time, which the target pick (1.5.1) compares the frames' timestamps with
+        let pick = eh.pollFrameForDisplay(timeout: 0.008, presentationNs: UInt64(max(0, vsyncTime) * 1e9))
+        eh.reportTicksIfDue(streaming: streamingActiveForFrame)   // Renderer.swift renderFrame: the va_ticks window follows the pick
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
         switch pick {
         case .resubmit(let f):

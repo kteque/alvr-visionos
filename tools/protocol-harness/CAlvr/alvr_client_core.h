@@ -89,6 +89,8 @@ enum AlvrEvent_Tag
     // Note: All subsequent DecoderConfig events should be ignored until reconnection
     ALVR_EVENT_DECODER_CONFIG,
     ALVR_EVENT_REAL_TIME_CONFIG,
+    // AirFrameXR (patches/client_core-reserved-message.patch): read the text with alvr_reserved_message
+    ALVR_EVENT_RESERVED_MESSAGE,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -283,6 +285,9 @@ void alvr_pause(void);
 
 // Returns true if there was a new event
 bool alvr_poll_event(union AlvrEvent *out_event);
+
+// AirFrameXR (patches/client_core-reserved-message.patch): the text of the last ReservedMessage event; returns its length including the zero
+uint64_t alvr_reserved_message(char *message_buffer);
 
 uint64_t alvr_hud_message(char *message_buffer);
 

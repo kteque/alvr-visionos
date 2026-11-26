@@ -168,7 +168,26 @@ class EventHandler: ObservableObject {
     /// every tick shows a frame a period older than it has to be. With this on, a pick that finds 2 queued frames shows the newer and
     /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
     static var catchUpPick = false
-    var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
+    var catchUpDrops = 0         // frames discarded by that rule or the target pick (read under frameQueueLock; the va_ticks "drops")
+    /// Target pick (since AirFrameXR 1.5.1): when two or more frames are queued, show the one meant for this tick rather than the oldest. A
+    /// frame's timestamp is the presentation time of the tick its tracking sample came from, so its distance to the tick being drawn is a
+    /// whole number of periods. The pipeline's own distance L is the 10th percentile of the last 64 shown (a low percentile, not the minimum:
+    /// one fast frame must not make on-time frames look late, the 1.3.8 catch-up's cost; a standing frame puts whole runs at L + 1, not
+    /// single frames). Among the queued frames that are not early (distance >= L) the newest is shown and the older ones, whose tick has
+    /// passed, are dropped. A lone frame is shown whatever its distance (nothing is ever held back), and with every queued frame early the
+    /// oldest goes first. Measured on the headset (2026-11-26, the frame timing campaign, AirFrameXR docs/PLAN_E2E_FRAME_TIMING.md 10.3):
+    /// with generation on, a second frame stood in this queue for 40 to 61 % of the frames, a period of latency each; the target pick
+    /// takes the decoded frame's wait from about 10 to 5 ms, for 15 dropped frames per 1000 against 8. Render thread only.
+    private var targetDist = [UInt64](repeating: 0, count: 64)
+    private var targetScratch = [UInt64](repeating: 0, count: 64)
+    private var targetDistN = 0
+    private func targetLowDist() -> UInt64? {
+        let n = min(targetDistN, targetDist.count)
+        if n < 20 { return nil }
+        for i in 0..<n { targetScratch[i] = targetDist[i] }
+        targetScratch[0..<n].sort()   // in place, preallocated
+        return targetScratch[n / 10]
+    }
 
     // Display-tick counters for the streamer's "headset repeated" figure (AirFrameXR docs/MEASUREMENT_FIX_LOG.md): one count per render tick
     // while streaming, what that tick showed. Written by the render thread only (plain integers, no lock, no allocation); the window is
@@ -572,7 +591,7 @@ class EventHandler: ObservableObject {
     /// Render thread: waits up to `timeout` for a decoded frame. Everything it reads (queue, last shown frame, last
     /// submitted timestamp) is written by other threads (decoder output, command-buffer completion, stream stop), so
     /// every read happens under frameQueueLock and the last shown frame is read once.
-    func pollFrameForDisplay(timeout: Double) -> DisplayPick {
+    func pollFrameForDisplay(timeout: Double, presentationNs: UInt64 = 0) -> DisplayPick {
         let startPollTime = CACurrentMediaTime()
         while true {
             sched_yield()
@@ -588,7 +607,23 @@ class EventHandler: ObservableObject {
                     catchUpDrops += frameQueue.count - 1
                     frameQueue.removeFirst(frameQueue.count - 1)
                 }
+                if presentationNs > 0 && frameQueue.count >= 2, let L = targetLowDist() {
+                    // the newest frame that is not early; everything older than it has had its tick
+                    var chosen = -1
+                    for i in stride(from: frameQueue.count - 1, through: 0, by: -1) {
+                        let ts = frameQueue[i].timestamp
+                        if ts < presentationNs && presentationNs - ts >= L - L / 20 { chosen = i; break }   // 5 % tolerance on the period grid
+                    }
+                    if chosen > 0 {
+                        catchUpDrops += chosen
+                        frameQueue.removeFirst(chosen)
+                    }
+                }
                 let f = frameQueue.removeFirst()
+                if presentationNs > f.timestamp {
+                    targetDist[targetDistN % targetDist.count] = presentationNs - f.timestamp
+                    targetDistN += 1
+                }
                 objc_sync_exit(frameQueueLock)
                 tickFresh += 1
                 return .fresh(f)
