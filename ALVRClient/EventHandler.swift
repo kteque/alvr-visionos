@@ -174,6 +174,40 @@ class EventHandler: ObservableObject {
     /// cost of every one-frame wobble (1.3.8: -1.1 points of new frames). Sustained = discard the older frame only after the queue has held 2
     /// at this many picks in a row; 0 = off (the shipped behaviour). Render thread only.
     static var catchUpSustainedPicks = 0
+    /// Frame timing experiment (plan section 7, `va_slack`): per fresh pick, how long before the pick began the frame was decoded (ms; negative =
+    /// it arrived during the wait). Written by the pick under frameQueueLock into a preallocated buffer; a background timer sends p1 / p10 / p50 /
+    /// p90, the count and the ticks the wait gave up on once a second as a `va_slack` line (the streamer's lock v2 input). Nothing is formatted
+    /// or logged on the render thread.
+    static let slackCapacity = 512
+    private var slackRing = [Double](repeating: 0, count: EventHandler.slackCapacity)
+    private var slackCount = 0
+    private var slackGaveUp = 0
+    private var slackTimer: DispatchSourceTimer? = nil
+    private let slackQueue = DispatchQueue(label: "airframexr.va_slack", qos: .utility)
+
+    /// Started once (idempotent): the 1 s `va_slack` reporter.
+    func startSlackReporter() {
+        if slackTimer != nil { return }
+        let t = DispatchSource.makeTimerSource(queue: slackQueue)
+        t.schedule(deadline: .now() + 1, repeating: 1.0)
+        var local = [Double](repeating: 0, count: EventHandler.slackCapacity)
+        t.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            objc_sync_enter(self.frameQueueLock)
+            let n = self.slackCount, gaveUp = self.slackGaveUp
+            for i in 0..<n { local[i] = self.slackRing[i] }
+            self.slackCount = 0; self.slackGaveUp = 0
+            objc_sync_exit(self.frameQueueLock)
+            if n == 0 || !self.streamingActive { return }
+            var v = Array(local[0..<n]); v.sort()
+            func q(_ f: Double) -> Double { v[min(n - 1, Int(Double(n) * f))] }
+            let line = String(format: "va_slack {\"v\":1,\"n\":%d,\"p1\":%.2f,\"p10\":%.2f,\"p50\":%.2f,\"p90\":%.2f,\"min\":%.2f,\"gave_up\":%d}",
+                              n, q(0.01), q(0.10), q(0.50), q(0.90), v[0], gaveUp)
+            line.withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+        }
+        slackTimer = t
+        t.resume()
+    }
     private var depth2Streak = 0
     var sustainedDrops = 0       // frames discarded by the sustained rule (read under frameQueueLock)
 
@@ -189,6 +223,7 @@ class EventHandler: ObservableObject {
 
     /// Render thread, once per tick after the pick: sends the window when 10 s have passed.
     func reportTicksIfDue(streaming: Bool) {
+        if streaming && slackTimer == nil { startSlackReporter() }
         let now = CACurrentMediaTime()
         if !streaming {
             tickFresh = 0; tickResubmit = 0; tickReprojected = 0; tickNone = 0; tickWindowStart = 0
@@ -605,6 +640,11 @@ class EventHandler: ObservableObject {
                     }
                 }
                 let f = frameQueue.removeFirst()
+                if f.decodedAt > 0 && slackCount < EventHandler.slackCapacity {
+                    // positive: decoded before the pick began (it waited); negative: it came during the wait, which caught it
+                    slackRing[slackCount] = (startPollTime - f.decodedAt) * 1000
+                    slackCount += 1
+                }
                 objc_sync_exit(frameQueueLock)
                 tickFresh += 1
                 return .fresh(f)
@@ -613,6 +653,7 @@ class EventHandler: ObservableObject {
             objc_sync_exit(frameQueueLock)
             if CACurrentMediaTime() - startPollTime > timeout {
                 depth2Streak = 0   // a tick without a queued frame ends any standing run
+                objc_sync_enter(frameQueueLock); slackGaveUp += 1; objc_sync_exit(frameQueueLock)
                 // Recycle old frame with old timestamp/anchor (visionOS doesn't do timewarp for us?)
                 if last != nil { tickReprojected += 1 } else { tickNone += 1 }
                 return last.map { .reprojected($0) } ?? .none
@@ -912,10 +953,10 @@ class EventHandler: ObservableObject {
                     // the next frame is starting, so keep this around for now just in case.
                     if frameQueueLastImageBuffer != nil {
                         //frameQueue.append(QueuedFrame(imageBuffer: frameQueueLastImageBuffer!, timestamp: frameQueueLastTimestamp))
-                        frameQueue.append(QueuedFrame(imageBuffer: imageBuffer, timestamp: timestamp, viewParamsValid: false, viewParams: viewParamsDummy))
+                        frameQueue.append(QueuedFrame(imageBuffer: imageBuffer, timestamp: timestamp, viewParamsValid: false, viewParams: viewParamsDummy, decodedAt: timeLastFrameDecoded))
                     }
                     else {
-                        frameQueue.append(QueuedFrame(imageBuffer: imageBuffer, timestamp: timestamp, viewParamsValid: false, viewParams: viewParamsDummy))
+                        frameQueue.append(QueuedFrame(imageBuffer: imageBuffer, timestamp: timestamp, viewParamsValid: false, viewParams: viewParamsDummy, decodedAt: timeLastFrameDecoded))
                     }
                     // TODO: make this configurable
                     if frameQueue.count > 2 {
@@ -1369,4 +1410,6 @@ struct QueuedFrame {
     let timestamp: UInt64
     let viewParamsValid: Bool
     let viewParams: [AlvrViewParams]
+    /// when the decoder handed the picture over (CACurrentMediaTime); 0 when unknown (frame timing experiment, the arrival slack)
+    var decodedAt: Double = 0
 }
