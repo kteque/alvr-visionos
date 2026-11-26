@@ -201,6 +201,7 @@ class EventHandler: ObservableObject {
     private var slackRing = [Double](repeating: 0, count: EventHandler.slackCapacity)
     private var slackCount = 0
     private var slackGaveUp = 0
+    private var slackStanding = 0   // fresh picks with another frame behind (left out of the slack)
     private var slackTimer: DispatchSourceTimer? = nil
     private let slackQueue = DispatchQueue(label: "airframexr.va_slack", qos: .utility)
 
@@ -213,15 +214,15 @@ class EventHandler: ObservableObject {
         t.setEventHandler { [weak self] in
             guard let self = self else { return }
             objc_sync_enter(self.frameQueueLock)
-            let n = self.slackCount, gaveUp = self.slackGaveUp
+            let n = self.slackCount, gaveUp = self.slackGaveUp, standing = self.slackStanding
             for i in 0..<n { local[i] = self.slackRing[i] }
-            self.slackCount = 0; self.slackGaveUp = 0
+            self.slackCount = 0; self.slackGaveUp = 0; self.slackStanding = 0
             objc_sync_exit(self.frameQueueLock)
             if n == 0 || !self.streamingActive { return }
             var v = Array(local[0..<n]); v.sort()
             func q(_ f: Double) -> Double { v[min(n - 1, Int(Double(n) * f))] }
-            let line = String(format: "va_slack {\"v\":1,\"n\":%d,\"p1\":%.2f,\"p10\":%.2f,\"p50\":%.2f,\"p90\":%.2f,\"min\":%.2f,\"gave_up\":%d}",
-                              n, q(0.01), q(0.10), q(0.50), q(0.90), v[0], gaveUp)
+            let line = String(format: "va_slack {\"v\":1,\"n\":%d,\"p1\":%.2f,\"p10\":%.2f,\"p50\":%.2f,\"p90\":%.2f,\"min\":%.2f,\"gave_up\":%d,\"standing\":%d}",
+                              n, q(0.01), q(0.10), q(0.50), q(0.90), v[0], gaveUp, standing)
             line.withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
         }
         slackTimer = t
@@ -288,16 +289,11 @@ class EventHandler: ObservableObject {
         guard let data = text.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               (root["airframexr"] as? NSNumber)?.intValue == 1 else { return }
-        var view: [simd_float4]? = nil
-        if let v = root["view"] as? [String: Any],
-           let l = (v["left"] as? [NSNumber])?.map({ $0.floatValue }), l.count == 4,
-           let r = (v["right"] as? [NSNumber])?.map({ $0.floatValue }), r.count == 4,
-           (l + r).allSatisfy({ $0.isFinite && $0 > 0.05 }) {
-            // the left eye's outer edge is its left one; the right eye's outer edge is its right one
-            view = [simd_float4(l[0], l[1], l[2], l[3]), simd_float4(r[1], r[0], r[2], r[3])]
-        }
         // frame timing experiment (AirFrameXR exp_timing.rs): the streamer's arm sets the client's switches; no `exp` = today's behaviour
         let exp = root["exp"] as? [String: Any]
+        // no `exp` = leave the switches alone, unless an experiment was running (then back to today's behaviour); a lab run's own flags stay
+        if exp == nil && !EventHandler.expSeen { return applyView(root) }
+        EventHandler.expSeen = exp != nil
         let target = (exp?["pick"] as? String) == "target"
         if target != EventHandler.targetPick {
             EventHandler.targetPick = target
@@ -307,6 +303,20 @@ class EventHandler: ObservableObject {
         if sustained != EventHandler.catchUpSustainedPicks {
             EventHandler.catchUpSustainedPicks = sustained
             "[exp] catch-up sustained \(sustained) (0 = off)".withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+        }
+        applyView(root)
+    }
+    static var expSeen = false
+
+    /// the view box and the sharpening of a headset view message
+    private func applyView(_ root: [String: Any]) {
+        var view: [simd_float4]? = nil
+        if let v = root["view"] as? [String: Any],
+           let l = (v["left"] as? [NSNumber])?.map({ $0.floatValue }), l.count == 4,
+           let r = (v["right"] as? [NSNumber])?.map({ $0.floatValue }), r.count == 4,
+           (l + r).allSatisfy({ $0.isFinite && $0 > 0.05 }) {
+            // the left eye's outer edge is its left one; the right eye's outer edge is its right one
+            view = [simd_float4(l[0], l[1], l[2], l[3]), simd_float4(r[1], r[0], r[2], r[3])]
         }
         let sharpen = (root["sharpen"] as? Bool) ?? false
         if setHeadsetView(view, sharpen: sharpen) {
@@ -683,12 +693,14 @@ class EventHandler: ObservableObject {
                         frameQueue.removeFirst(chosen)
                     }
                 }
+                let alone = frameQueue.count == 1   // not standing behind another (WiVRn leaves such frames out of its statistic)
                 let f = frameQueue.removeFirst()
                 if EventHandler.targetPick && presentationNs > f.timestamp {
                     targetDist[targetDistN % targetDist.count] = presentationNs - f.timestamp
                     targetDistN += 1
                 }
-                if f.decodedAt > 0 && slackCount < EventHandler.slackCapacity {
+                if !alone { slackStanding += 1 }
+                if alone && f.decodedAt > 0 && slackCount < EventHandler.slackCapacity {
                     // positive: decoded before the pick began (it waited); negative: it came during the wait, which caught it
                     slackRing[slackCount] = (startPollTime - f.decodedAt) * 1000
                     slackCount += 1
