@@ -457,7 +457,7 @@ let args = CommandLine.arguments
 func argValue(_ k: String) -> String? { args.firstIndex(of: k).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil } }
 
 if args.count < 2 || args[1] == "list" {
-    for s in scenarios { Swift.print("\(s.name.padding(toLength: 20, withPad: " ", startingAt: 0)) \(s.about)") }
+    for s in scenarios { Swift.print("\(s.name.padding(toLength: max(20, s.name.count), withPad: " ", startingAt: 0)) \(s.about)") }   // a longer name is not cut (run.sh takes the first word)
     Glibc.exit(0)
 }
 guard args[1] == "run", args.count >= 3, let sc = scenarios.first(where: { $0.name == args[2] }) else {
