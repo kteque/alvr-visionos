@@ -13,6 +13,10 @@ on:
       build:
         description: "Build number (empty = the newest valid build of that version)"
         default: ""
+      status_only:
+        description: "Only print the state of the visionOS versions and review submissions"
+        type: boolean
+        default: false
       submit:
         description: "Submit to App Review (untick = only fill in the record)"
         type: boolean
@@ -36,6 +40,7 @@ jobs:
       REVIEW_CONTACT_EMAIL: ${{ secrets.BETA_CONTACT_EMAIL }}
       VERSION: ${{ inputs.version || '1.4.1' }}
       BUILD: ${{ inputs.build }}
+      STATUS_ONLY: ${{ inputs.status_only && '1' || '0' }}
       SUBMIT: ${{ inputs.submit && '1' || '0' }}
     steps:
       - uses: actions/checkout@v4

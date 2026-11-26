@@ -80,6 +80,13 @@ aid = app["id"]
 version = E["VERSION"]
 step(f"app {aid}, version {version}")
 vers = call("GET", f"/v1/apps/{aid}/appStoreVersions?filter[platform]=VISION_OS&limit=10")["data"]
+if E.get("STATUS_ONLY") == "1":
+    for v in vers:
+        print("STATUS", v["attributes"]["versionString"], v["attributes"]["appStoreState"])
+    subs = call("GET", f"/v1/apps/{aid}/reviewSubmissions?filter[platform]=VISION_OS&limit=10")["data"]
+    for r in subs:
+        print("SUBMISSION", r["id"], r["attributes"].get("state"), r["attributes"].get("submittedDate"))
+    sys.exit(0)
 editable = [v for v in vers if v["attributes"]["appStoreState"] in ("PREPARE_FOR_SUBMISSION", "DEVELOPER_REJECTED", "REJECTED", "METADATA_REJECTED", "INVALID_BINARY")]
 if not editable:
     if any(v["attributes"]["appStoreState"] in ("WAITING_FOR_REVIEW", "IN_REVIEW") for v in vers):
