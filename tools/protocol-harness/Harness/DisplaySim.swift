@@ -30,8 +30,8 @@ final class DisplaySim: @unchecked Sendable {
     /// presentation time skips ahead (a doubled interval, as the field's `display interval` lines show). false = the protocol harness's old rule.
     nonisolated(unsafe) var strictDeadline = false
     nonisolated(unsafe) var slackMs = 4.3
-    /// Rig: how long the pick waits for a late frame (the client's own value is 5 ms)
-    nonisolated(unsafe) var pollTimeout = 0.005
+    /// Rig: how long the pick waits for a late frame (the client's own value is 8 ms since 1.3.9, Renderer.swift renderFrame)
+    nonisolated(unsafe) var pollTimeout = 0.008
     nonisolated(unsafe) var lastExtraMs = 0.0
     let lock = NSLock()
     var ticks: [Tick] = []

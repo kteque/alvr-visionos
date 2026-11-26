@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 5] [--catch-up 0] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 8] [--catch-up 0|1] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -27,7 +27,8 @@ if let v = argValue("--hiccup-ms") { let p = v.split(separator: ":").map { Doubl
 if let v = argValue("--view-width").flatMap(Int.init) { renderWidth = v / 2; RigConfig.width = v }
 if let v = argValue("--view-height").flatMap(Int.init) { renderHeight = v / 2; RigConfig.height = v }
 if let v = argValue("--poll-ms").flatMap(Double.init) { DisplaySim.shared.pollTimeout = v / 1000 }
-if (argValue("--catch-up") ?? "1") == "0" { EventHandler.catchUpPick = false }
+// the client's own value since 1.3.9 is off (EventHandler.catchUpPick); the flag sets it either way
+if let v = argValue("--catch-up") { EventHandler.catchUpPick = (v == "1") }
 if let v = argValue("--yaw-amp").flatMap(Double.init) { RigPose.yawAmp = v }
 if let v = argValue("--yaw-hz").flatMap(Double.init) { RigPose.yawHz = v }
 if let v = argValue("--decode-ms").flatMap(Double.init) { RigConfig.decodeMs = v }
@@ -104,6 +105,24 @@ func writeReport() {
             m["win_queue_age_mean_ms"] = qages.reduce(0, +) / Double(qages.count)
             m["win_queue_age_p95_ms"] = qages[min(qages.count - 1, Int(Double(qages.count) * 0.95))]
         }
+        // standing second frame (docs/PLAN_E2E_FRAME_TIMING.md 2.2, Finding A), in display order as the field's client_frames.csv: a fresh frame that waited
+        // more than a period (10.5 ms at 100 Hz) had another frame ahead of it; runs of 10+ such frames are a standing queue. Same definitions as the field table.
+        let seqWait = w.filter { $0.shown == .new }.compactMap { t -> Double? in
+            guard let d = RigFrames.shared.decodedTime(t.frameIndex ?? 0) else { return nil }; return (t.pickT - d) * 1000 }
+        if !seqWait.isEmpty {
+            let over = 10.5
+            var runs: [Int] = []; var cur = 0; var adj = seqWait
+            for (k, x) in seqWait.enumerated() {
+                if x > over { cur += 1 } else { if cur > 0 { runs.append(cur); if cur >= 10 { for z in (k - cur)..<k { adj[z] -= 10 } } }; cur = 0 }
+            }
+            if cur > 0 { runs.append(cur); if cur >= 10 { for z in (seqWait.count - cur)..<seqWait.count { adj[z] -= 10 } } }
+            let nw = Double(seqWait.count)
+            m["win_over_period_fraction"] = Double(runs.reduce(0, +)) / nw
+            m["win_standing_runs_per_1000"] = Double(runs.filter { $0 >= 10 }.count) / nw * 1000
+            m["win_standing_run_max"] = Double(runs.max() ?? 0)
+            m["win_queue_age_mean_without_runs_ms"] = adj.reduce(0, +) / nw
+        }
+        m["win_depth2_fraction"] = Double(w.filter { $0.depth >= 2 }.count) / wn
         // repeats by cause (per 1000 ticks): the pick's result when it had nothing new, and the render thread's missed deadlines (doubled intervals)
         m["win_pick_resubmit_per_1000"] = Double(w.filter { $0.pick == 2 }.count) / wn * 1000
         m["win_pick_reprojected_per_1000"] = Double(w.filter { $0.pick == 3 }.count) / wn * 1000
