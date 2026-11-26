@@ -17,7 +17,22 @@ final class DisplaySim: @unchecked Sendable {
 
     // what the wearer saw, one entry per display tick
     enum Shown { case blank, new, repeated }
-    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double?; let depth: Int }   // depth: decoded frames waiting when the tick picked
+    struct Tick { let t: Double; let shown: Shown; let frameIndex: UInt32?; let ageMs: Double?; let depth: Int   // depth: decoded frames waiting when the tick picked
+        // the compositor's presentation time of this tick (the rig reads display intervals from it) and whether the frame missed its deadline
+        var vsync: Double = 0; var missed = false
+        // the timestamp the shown frame carries (the presentation time it was predicted for) and the pick result: 0 none, 1 fresh, 2 resubmit, 3 reprojected
+        var frameTs: UInt64 = 0; var pick: UInt8 = 0
+        // when the pick returned (log clock): with the frame's decode time it gives the age of the frame in the queue
+        var pickT: Double = 0 }
+    /// Rig: extra CPU cost (ms) of a frame, called once per frame on the render thread (the field's tracking-query spikes and stalls). nil = none.
+    nonisolated(unsafe) var extraCostMs: (() -> Double)? = nil
+    /// Rig: a frame that ends after its own presentation time misses the compositor's deadline: that tick shows the previous picture and the next
+    /// presentation time skips ahead (a doubled interval, as the field's `display interval` lines show). false = the protocol harness's old rule.
+    nonisolated(unsafe) var strictDeadline = false
+    nonisolated(unsafe) var slackMs = 4.3
+    /// Rig: how long the pick waits for a late frame (the client's own value is 5 ms)
+    nonisolated(unsafe) var pollTimeout = 0.005
+    nonisolated(unsafe) var lastExtraMs = 0.0
     let lock = NSLock()
     var ticks: [Tick] = []
     // when the host sent each frame (frame age at the display tick = tick time - this)
@@ -63,6 +78,19 @@ final class DisplaySim: @unchecked Sendable {
             let now = CACurrentMediaTime()
             if optimalInput > now { usleep(UInt32((optimalInput - now) * 1e6)) }
             renderFrame(presentation: nextVsync)
+            if strictDeadline {
+                // Field calibration: a frame misses its deadline when the render thread's extra cost (a blocked tracking query: window maxima 4.4 ms,
+                // up to 14.4; a stall at worst 80 ms or more) is over the slack (4.3 ms); it is late by that excess, in whole periods, so the
+                // compositor's next presentation time skips ahead: 20 ms intervals mostly, 30 ms for the biggest spikes, 80 ms for a stall.
+                let cur = nextVsync
+                if lastExtraMs > slackMs {
+                    let k = ((lastExtraMs - slackMs) / 1000 / period).rounded(.up)
+                    nextVsync = cur + (k + 1) * period
+                    lock.lock(); if !ticks.isEmpty { ticks[ticks.count - 1].missed = true }; lock.unlock()
+                    HarnessStats.shared.count("missed_deadline")
+                } else { nextVsync = cur + period }
+                continue
+            }
             nextVsync += period
             let late = CACurrentMediaTime() - nextVsync
             if late > 0 { // a missed frame: the compositor moves on to the next vsync
@@ -81,24 +109,29 @@ final class DisplaySim: @unchecked Sendable {
         var streamingActiveForFrame = eh.streamingActive
         var isReprojected = false
         var pickedFresh = false
+        var pickKind: UInt8 = 0
         var queuedFrame: QueuedFrame? = nil
 
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
         objc_sync_enter(eh.frameQueueLock); let depthAtPick = eh.frameQueue.count; objc_sync_exit(eh.frameQueueLock)
         let pickStart = CACurrentMediaTime()
-        let pick = eh.pollFrameForDisplay(timeout: 0.005)
+        let pick = eh.pollFrameForDisplay(timeout: pollTimeout)
+        let pickT = HarnessLog.shared.now()
         HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
         switch pick {
         case .resubmit(let f):
+            pickKind = 2
             HarnessStats.shared.count("pick_resubmit")
             queuedFrame = f
             eh.framesRendered -= 1
             isReprojected = false
         case .fresh(let f):
+            pickKind = 1
             HarnessStats.shared.count("pick_fresh")
             pickedFresh = true
             queuedFrame = f
         case .reprojected(let f):
+            pickKind = 3
             HarnessStats.shared.count("pick_reprojected")
             queuedFrame = f
             eh.framesRendered -= 1
@@ -166,11 +199,12 @@ final class DisplaySim: @unchecked Sendable {
         let nowT = HarnessLog.shared.now()
         var ageMs: Double? = nil
         if shown == .new, let i = queuedFrame?.imageBuffer.frameIndex, let sent = sentAt[i] { ageMs = (nowT - sent) * 1000 }
-        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, depth: depthAtPick))
+        ticks.append(Tick(t: nowT, shown: shown, frameIndex: queuedFrame?.imageBuffer.frameIndex, ageMs: ageMs, depth: depthAtPick, vsync: vsyncTime, frameTs: queuedFrame?.timestamp ?? 0, pick: pickKind, pickT: pickT))
         lock.unlock()
 
         // the frame's own CPU cost before endSubmission (encode + commit)
-        usleep(1000)
+        lastExtraMs = extraCostMs?() ?? 0
+        usleep(UInt32((1.0 + lastExtraMs) * 1000))
 
         // Renderer.swift:1044-1045
         eh.publishShownFrame(queuedFrame)
