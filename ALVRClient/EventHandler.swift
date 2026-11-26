@@ -169,6 +169,13 @@ class EventHandler: ObservableObject {
     /// discards the older (the queue never stays above 1 for long); a steady stream does not reach it.
     static var catchUpPick = false
     var catchUpDrops = 0         // frames discarded by that rule (read under frameQueueLock)
+    /// Frame timing experiment (AirFrameXR docs/PLAN_E2E_FRAME_TIMING.md, H3, switch `catchup = sustained`): the field logs show standing runs of
+    /// a second frame (up to 288 picks in a row, 30 to 54 % of frames waiting more than a period) that the rule above would end at once but at the
+    /// cost of every one-frame wobble (1.3.8: -1.1 points of new frames). Sustained = discard the older frame only after the queue has held 2
+    /// at this many picks in a row; 0 = off (the shipped behaviour). Render thread only.
+    static var catchUpSustainedPicks = 0
+    private var depth2Streak = 0
+    var sustainedDrops = 0       // frames discarded by the sustained rule (read under frameQueueLock)
 
     // Display-tick counters for the streamer's "headset repeated" figure (AirFrameXR docs/MEASUREMENT_FIX_LOG.md): one count per render tick
     // while streaming, what that tick showed. Written by the render thread only (plain integers, no lock, no allocation); the window is
@@ -588,6 +595,15 @@ class EventHandler: ObservableObject {
                     catchUpDrops += frameQueue.count - 1
                     frameQueue.removeFirst(frameQueue.count - 1)
                 }
+                if EventHandler.catchUpSustainedPicks > 0 {
+                    depth2Streak = frameQueue.count >= 2 ? depth2Streak + 1 : 0
+                    if depth2Streak >= EventHandler.catchUpSustainedPicks && frameQueue.count >= 2 {
+                        sustainedDrops += frameQueue.count - 1
+                        catchUpDrops += frameQueue.count - 1
+                        frameQueue.removeFirst(frameQueue.count - 1)
+                        depth2Streak = 0
+                    }
+                }
                 let f = frameQueue.removeFirst()
                 objc_sync_exit(frameQueueLock)
                 tickFresh += 1
@@ -596,6 +612,7 @@ class EventHandler: ObservableObject {
             let last = lastQueuedFrame
             objc_sync_exit(frameQueueLock)
             if CACurrentMediaTime() - startPollTime > timeout {
+                depth2Streak = 0   // a tick without a queued frame ends any standing run
                 // Recycle old frame with old timestamp/anchor (visionOS doesn't do timewarp for us?)
                 if last != nil { tickReprojected += 1 } else { tickNone += 1 }
                 return last.map { .reprojected($0) } ?? .none

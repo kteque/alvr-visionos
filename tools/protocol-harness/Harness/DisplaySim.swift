@@ -33,6 +33,10 @@ final class DisplaySim: @unchecked Sendable {
     /// Rig: how long the pick waits for a late frame (the client's own value is 8 ms since 1.3.9, Renderer.swift renderFrame)
     nonisolated(unsafe) var pollTimeout = 0.008
     nonisolated(unsafe) var lastExtraMs = 0.0
+    /// Rig (frame timing experiment, docs/PLAN_E2E_FRAME_TIMING.md L3): the pick's own wait for a late frame also spends the deadline slack, as on the headset
+    /// (the wait sits between the optimal input time and the rendering deadline). false = the 2026-11-10 model (only the extra CPU cost counts).
+    nonisolated(unsafe) var waitEatsSlack = false
+    nonisolated(unsafe) var lastPickWaitMs = 0.0
     let lock = NSLock()
     var ticks: [Tick] = []
     // when the host sent each frame (frame age at the display tick = tick time - this)
@@ -83,8 +87,9 @@ final class DisplaySim: @unchecked Sendable {
                 // up to 14.4; a stall at worst 80 ms or more) is over the slack (4.3 ms); it is late by that excess, in whole periods, so the
                 // compositor's next presentation time skips ahead: 20 ms intervals mostly, 30 ms for the biggest spikes, 80 ms for a stall.
                 let cur = nextVsync
-                if lastExtraMs > slackMs {
-                    let k = ((lastExtraMs - slackMs) / 1000 / period).rounded(.up)
+                let spent = lastExtraMs + (waitEatsSlack ? lastPickWaitMs : 0)
+                if spent > slackMs {
+                    let k = ((spent - slackMs) / 1000 / period).rounded(.up)
                     nextVsync = cur + (k + 1) * period
                     lock.lock(); if !ticks.isEmpty { ticks[ticks.count - 1].missed = true }; lock.unlock()
                     HarnessStats.shared.count("missed_deadline")
@@ -117,7 +122,8 @@ final class DisplaySim: @unchecked Sendable {
         let pickStart = CACurrentMediaTime()
         let pick = eh.pollFrameForDisplay(timeout: pollTimeout)
         let pickT = HarnessLog.shared.now()
-        HarnessStats.shared.count("pick_wait_ms_total", by: Int((CACurrentMediaTime() - pickStart) * 1e3))
+        lastPickWaitMs = (CACurrentMediaTime() - pickStart) * 1e3
+        HarnessStats.shared.count("pick_wait_ms_total", by: Int(lastPickWaitMs))
         switch pick {
         case .resubmit(let f):
             pickKind = 2

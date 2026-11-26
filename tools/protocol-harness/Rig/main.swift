@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 8] [--catch-up 0|1] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 8] [--catch-up 0|1] [--catch-up-sustained N] [--wait-eats-slack 0|1] [--slack-ms 4.3] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -29,6 +29,8 @@ if let v = argValue("--view-height").flatMap(Int.init) { renderHeight = v / 2; R
 if let v = argValue("--poll-ms").flatMap(Double.init) { DisplaySim.shared.pollTimeout = v / 1000 }
 // the client's own value since 1.3.9 is off (EventHandler.catchUpPick); the flag sets it either way
 if let v = argValue("--catch-up") { EventHandler.catchUpPick = (v == "1") }
+// frame timing experiment, switch catchup = sustained: drop the older frame after N picks in a row at depth 2 (0 = off)
+if let v = argValue("--catch-up-sustained").flatMap(Int.init) { EventHandler.catchUpSustainedPicks = v }
 if let v = argValue("--yaw-amp").flatMap(Double.init) { RigPose.yawAmp = v }
 if let v = argValue("--yaw-hz").flatMap(Double.init) { RigPose.yawHz = v }
 if let v = argValue("--decode-ms").flatMap(Double.init) { RigConfig.decodeMs = v }
@@ -39,6 +41,9 @@ if let v = argValue("--height").flatMap(Int.init) { RigConfig.height = v }
 DisplaySim.shared.displayHz = Double(argValue("--display-hz") ?? "") ?? 100
 // field model: the display keeps its rate, the render thread misses deadlines (baseline + storms); --strict-deadline 0 keeps the harness's old rule
 DisplaySim.shared.strictDeadline = (argValue("--strict-deadline") ?? "1") != "0"
+// L3 model: the pick's wait counts against the slack (--wait-eats-slack 1), with the slack between the optimal input time and the deadline (--slack-ms; field 1.3.8: ~9.3 ms minus the CPU work)
+if (argValue("--wait-eats-slack") ?? "0") == "1" { DisplaySim.shared.waitEatsSlack = true }
+if let v = argValue("--slack-ms").flatMap(Double.init) { DisplaySim.shared.slackMs = v }
 if let v = argValue("--miss-rate").flatMap(Double.init) { RigMisses.baseRate = v }
 if let v = argValue("--miss-rate-90").flatMap(Double.init) { RigMisses.baseRate90 = v }
 for st in argValues("--storm") { let p = st.split(separator: ":").map { Double($0) ?? 0 }; if p.count >= 3 { RigMisses.storms.append((p[0], p[1], p[2], p.count > 3 ? p[3] : 0)) } }
