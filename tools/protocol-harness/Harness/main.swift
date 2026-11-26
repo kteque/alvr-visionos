@@ -184,6 +184,9 @@ let scenarios: [Scenario] = [
     Scenario(name: "exp_switches", about: "frame timing experiment: the streamer turns the sustained catch-up on, off and on again mid-stream (live, no reconnect); the picture keeps going",
              phases: [game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"exp\":{\"catchup_sustained\":10}}"), .stream(seconds: 4, fps: 90, arrivalJitterMs: 6, spikeProb: 0.05, spikeMs: 20),
                       .reserved("{\"airframexr\":1,\"sharpen\":true}"), game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"exp\":{\"catchup_sustained\":3}}"), game90]),
+    Scenario(name: "exp_target_pick", about: "frame timing experiment: the streamer turns the target-tick pick on mid-stream under bursty arrivals (stalls released together), then off; the picture keeps going",
+             phases: [game90, .reserved("{\"airframexr\":1,\"sharpen\":true,\"exp\":{\"pick\":\"target\"}}"), .stream(seconds: 6, fps: 90, arrivalJitterMs: 4, spikeProb: 0.08, spikeMs: 22),
+                      game90, .reserved("{\"airframexr\":1,\"sharpen\":true}"), game90]),
     Scenario(name: "background_hold_long", about: "headset off for 12 s: the stream is still held, no keyframe storm while off, picture back after",
              phases: [game90, .background(seconds: 12), game90], expectHold: true),
 ]

@@ -120,7 +120,7 @@ final class DisplaySim: @unchecked Sendable {
         // Renderer.swift:688-702: the pick is EventHandler.pollFrameForDisplay (client code, compiled in)
         objc_sync_enter(eh.frameQueueLock); let depthAtPick = eh.frameQueue.count; objc_sync_exit(eh.frameQueueLock)
         let pickStart = CACurrentMediaTime()
-        let pick = eh.pollFrameForDisplay(timeout: pollTimeout)
+        let pick = eh.pollFrameForDisplay(timeout: pollTimeout, presentationNs: UInt64(max(0, vsyncTime) * 1e9))
         let pickT = HarnessLog.shared.now()
         lastPickWaitMs = (CACurrentMediaTime() - pickStart) * 1e3
         HarnessStats.shared.count("pick_wait_ms_total", by: Int(lastPickWaitMs))

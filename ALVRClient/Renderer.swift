@@ -717,7 +717,9 @@ class Renderer {
 
         // Locked pick (EventHandler.pollFrameForDisplay): the stream stop clears the last frame from the events thread. The wait for a late
         // frame is 8 ms (stock 5): measured on the headset 2026-11-10, +1.1 points of new frames and fewer reprojected ticks.
-        switch EventHandler.shared.pollFrameForDisplay(timeout: 0.008) {
+        // the tick's presentation time on the headset's clock (the frame timestamps' units): the experiment's target pick uses it
+        let presentationNs = UInt64(max(0, LayerRenderer.Clock.Instant.epoch.duration(to: timing.presentationTime).timeInterval) * Double(NSEC_PER_SEC))
+        switch EventHandler.shared.pollFrameForDisplay(timeout: 0.008, presentationNs: presentationNs) {
         case .resubmit(let f):
             queuedFrame = f
             EventHandler.shared.framesRendered -= 1

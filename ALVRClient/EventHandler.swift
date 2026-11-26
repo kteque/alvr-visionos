@@ -174,6 +174,25 @@ class EventHandler: ObservableObject {
     /// cost of every one-frame wobble (1.3.8: -1.1 points of new frames). Sustained = discard the older frame only after the queue has held 2
     /// at this many picks in a row; 0 = off (the shipped behaviour). Render thread only.
     static var catchUpSustainedPicks = 0
+    /// Frame timing experiment (AirFrameXR docs/IDEAS_FROM_OTHER_STREAMERS.md 3.1, switch `pick = target`): when two frames are queued, show
+    /// the one meant for this tick rather than the oldest. A frame's timestamp is the presentation time of the tick its tracking sample came
+    /// from, so its distance to the tick being drawn is a whole number of periods. The pipeline's own distance L is the 10th percentile of the
+    /// last 64 shown (a low percentile, not the minimum: one fast frame must not make on-time frames look late, the 1.3.8 catch-up's cost; a
+    /// standing run puts whole runs at L + 1, not single frames). Among the queued frames that are not early (distance >= L) the newest is shown
+    /// and the older ones, whose tick has passed, are dropped. A lone frame is shown whatever its distance (nothing is ever held back), and with
+    /// every queued frame early the oldest goes first. Off = the oldest first (shipped). Render thread only.
+    static var targetPick = false
+    private var targetDist = [UInt64](repeating: 0, count: 64)
+    private var targetScratch = [UInt64](repeating: 0, count: 64)
+    private var targetDistN = 0
+    var targetDrops = 0          // frames discarded by the target rule (read under frameQueueLock)
+    private func targetLowDist() -> UInt64? {
+        let n = min(targetDistN, targetDist.count)
+        if n < 20 { return nil }
+        for i in 0..<n { targetScratch[i] = targetDist[i] }
+        targetScratch[0..<n].sort()   // in place, preallocated
+        return targetScratch[n / 10]
+    }
     /// Frame timing experiment (plan section 7, `va_slack`): per fresh pick, how long before the pick began the frame was decoded (ms; negative =
     /// it arrived during the wait). Written by the pick under frameQueueLock into a preallocated buffer; a background timer sends p1 / p10 / p50 /
     /// p90, the count and the ticks the wait gave up on once a second as a `va_slack` line (the streamer's lock v2 input). Nothing is formatted
@@ -279,6 +298,11 @@ class EventHandler: ObservableObject {
         }
         // frame timing experiment (AirFrameXR exp_timing.rs): the streamer's arm sets the client's switches; no `exp` = today's behaviour
         let exp = root["exp"] as? [String: Any]
+        let target = (exp?["pick"] as? String) == "target"
+        if target != EventHandler.targetPick {
+            EventHandler.targetPick = target
+            "[exp] pick \(target ? "target" : "oldest")".withCString { alvr_log(UInt8(ALVR_LOG_LEVEL_ERROR.rawValue), $0) }
+        }
         let sustained = max(0, (exp?["catchup_sustained"] as? NSNumber)?.intValue ?? 0)
         if sustained != EventHandler.catchUpSustainedPicks {
             EventHandler.catchUpSustainedPicks = sustained
@@ -621,7 +645,7 @@ class EventHandler: ObservableObject {
     /// Render thread: waits up to `timeout` for a decoded frame. Everything it reads (queue, last shown frame, last
     /// submitted timestamp) is written by other threads (decoder output, command-buffer completion, stream stop), so
     /// every read happens under frameQueueLock and the last shown frame is read once.
-    func pollFrameForDisplay(timeout: Double) -> DisplayPick {
+    func pollFrameForDisplay(timeout: Double, presentationNs: UInt64 = 0) -> DisplayPick {
         let startPollTime = CACurrentMediaTime()
         while true {
             sched_yield()
@@ -646,7 +670,24 @@ class EventHandler: ObservableObject {
                         depth2Streak = 0
                     }
                 }
+                if EventHandler.targetPick && presentationNs > 0 && frameQueue.count >= 2, let L = targetLowDist() {
+                    // the newest frame that is not early; everything older than it has had its tick
+                    var chosen = -1
+                    for i in stride(from: frameQueue.count - 1, through: 0, by: -1) {
+                        let ts = frameQueue[i].timestamp
+                        if ts < presentationNs && presentationNs - ts >= L - L / 20 { chosen = i; break }   // 5 % tolerance on the period grid
+                    }
+                    if chosen > 0 {
+                        targetDrops += chosen
+                        catchUpDrops += chosen
+                        frameQueue.removeFirst(chosen)
+                    }
+                }
                 let f = frameQueue.removeFirst()
+                if EventHandler.targetPick && presentationNs > f.timestamp {
+                    targetDist[targetDistN % targetDist.count] = presentationNs - f.timestamp
+                    targetDistN += 1
+                }
                 if f.decodedAt > 0 && slackCount < EventHandler.slackCapacity {
                     // positive: decoded before the pick began (it waited); negative: it came during the wait, which caught it
                     slackRing[slackCount] = (startPollTime - f.decodedAt) * 1000

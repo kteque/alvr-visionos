@@ -2,7 +2,7 @@
 // receiving a real stream from the real streamer over the network. The decoder is a stand-in (counter picture, modelled decode
 // time), the render thread is DisplaySim (the same model as the protocol harness). See docs/VISIONOS_PERFORMANCE_PLAN.md section C.
 //
-//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 8] [--catch-up 0|1] [--catch-up-sustained N] [--wait-eats-slack 0|1] [--slack-ms 4.3] [--decode-ms 5] [--decode-sd-ms 1]
+//   rig_client --out DIR [--seconds N] [--display-hz 100] [--switch t:hz[:stall_ms]]... [--view-width W --view-height H (declared per eye)] [--yaw-amp 0.5 --yaw-hz 0.25] [--miss-rate 0.0022] [--miss-rate-90 0.023] [--storm t0_s:peak:tau_s[:stall_ms]]... [--strict-deadline 0] [--poll-ms 8] [--catch-up 0|1] [--catch-up-sustained N] [--pick oldest|target] [--wait-eats-slack 0|1] [--slack-ms 4.3] [--decode-ms 5] [--decode-sd-ms 1]
 //              [--gpu-ms 4] [--net-ms 2.5 --net-sd-ms 1] [--hiccup t:ms]... [--hiccup-rate N/min --hiccup-ms lo:hi] [--seed N] [--echo] [--width W --height H]
 
 import Foundation
@@ -31,6 +31,8 @@ if let v = argValue("--poll-ms").flatMap(Double.init) { DisplaySim.shared.pollTi
 if let v = argValue("--catch-up") { EventHandler.catchUpPick = (v == "1") }
 // frame timing experiment, switch catchup = sustained: drop the older frame after N picks in a row at depth 2 (0 = off)
 if let v = argValue("--catch-up-sustained").flatMap(Int.init) { EventHandler.catchUpSustainedPicks = v }
+// frame timing experiment, switch pick = target (docs/IDEAS_FROM_OTHER_STREAMERS.md 3.1)
+if (argValue("--pick") ?? "oldest") == "target" { EventHandler.targetPick = true }
 if let v = argValue("--yaw-amp").flatMap(Double.init) { RigPose.yawAmp = v }
 if let v = argValue("--yaw-hz").flatMap(Double.init) { RigPose.yawHz = v }
 if let v = argValue("--decode-ms").flatMap(Double.init) { RigConfig.decodeMs = v }
