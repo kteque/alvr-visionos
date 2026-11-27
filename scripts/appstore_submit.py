@@ -80,6 +80,14 @@ aid = app["id"]
 version = E["VERSION"]
 step(f"app {aid}, version {version}")
 vers = call("GET", f"/v1/apps/{aid}/appStoreVersions?filter[platform]=VISION_OS&limit=10")["data"]
+if E.get("CANCEL_SUBMISSION") == "1":
+    for r in call("GET", f"/v1/apps/{aid}/reviewSubmissions?filter[platform]=VISION_OS&limit=10")["data"]:
+        if r["attributes"].get("state") in ("WAITING_FOR_REVIEW", "IN_REVIEW", "UNRESOLVED_ISSUES"):
+            call("PATCH", f"/v1/reviewSubmissions/{r['id']}", {"data": {"type": "reviewSubmissions", "id": r["id"], "attributes": {"canceled": True}}}, soft="cancel")
+            print("CANCELED", r["id"], r["attributes"].get("state"))
+    for v in call("GET", f"/v1/apps/{aid}/appStoreVersions?filter[platform]=VISION_OS&limit=10")["data"]:
+        print("STATUS", v["attributes"]["versionString"], v["attributes"]["appStoreState"])
+    sys.exit(0)
 if E.get("STATUS_ONLY") == "1":
     for v in vers:
         print("STATUS", v["attributes"]["versionString"], v["attributes"]["appStoreState"])

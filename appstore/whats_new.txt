@@ -1,1 +1,5 @@
-Performance and stability improvements.
+- Voice chat for PC VR games such as VRChat: the headset microphone is streamed to your own PC (microphone permission is asked on first use).
+- Game audio keeps playing, and the stream stays connected, when you take the headset off (switch "Stream audio when headset removed", on by default, up to 30 minutes).
+- Joy-Con controllers through hand tracking (default OFF, toggle to enable).
+- Video stream sharpening and a field of view set by the AirFrameXR streamer, for a sharper picture.
+- Performance and stability improvements.

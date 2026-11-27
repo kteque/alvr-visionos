@@ -13,6 +13,10 @@ on:
       build:
         description: "Build number (empty = the newest valid build of that version)"
         default: ""
+      cancel_submission:
+        description: "Cancel the visionOS submission that is waiting, in review or rejected (nothing else runs)"
+        type: boolean
+        default: false
       status_only:
         description: "Only print the state of the visionOS versions and review submissions"
         type: boolean
@@ -40,6 +44,7 @@ jobs:
       REVIEW_CONTACT_EMAIL: ${{ secrets.BETA_CONTACT_EMAIL }}
       VERSION: ${{ inputs.version || '1.4.1' }}
       BUILD: ${{ inputs.build }}
+      CANCEL_SUBMISSION: ${{ inputs.cancel_submission && '1' || '0' }}
       STATUS_ONLY: ${{ inputs.status_only && '1' || '0' }}
       SUBMIT: ${{ inputs.submit && '1' || '0' }}
     steps:
