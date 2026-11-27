@@ -91,6 +91,9 @@ if E.get("CANCEL_SUBMISSION") == "1":
 if E.get("STATUS_ONLY") == "1":
     for v in vers:
         print("STATUS", v["attributes"]["versionString"], v["attributes"]["appStoreState"])
+    for b in call("GET", f"/v1/builds?filter[app]={aid}&sort=-uploadedDate&limit=6&include=preReleaseVersion")["data"]:
+        a = b["attributes"]
+        print("BUILD", a["version"], a["processingState"], "expired" if a["expired"] else "", a.get("uploadedDate"))
     subs = call("GET", f"/v1/apps/{aid}/reviewSubmissions?filter[platform]=VISION_OS&limit=10")["data"]
     for r in subs:
         print("SUBMISSION", r["id"], r["attributes"].get("state"), r["attributes"].get("submittedDate"))
